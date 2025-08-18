@@ -1,7 +1,7 @@
 ## Interface: 30300
-## Title: SwingTimer 3.3.5a
-## Notes: Simple melee/offhand/ranged swing timer bars for 3.3.5a (1-60 era with WotLK balancing)
-## Author: ChatGPT (for Steven)
+## Title: TacoRotSwingTimer
+## Notes: Swing timer bars for 3.3.5a
+## Author: Steven
 ## Version: 1.0.0
 ## SavedVariables: SwingTimerDB
 
