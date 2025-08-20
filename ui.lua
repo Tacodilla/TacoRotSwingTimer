@@ -47,7 +47,7 @@ local function NewBar(name, parent, r, g, b)
 end
 
 -- Root anchor (movable)
-local root = CreateFrame("Frame", ADDON.."Anchor", UIParent)
+local root = CreateFrame("Frame", ADDON_NAME.."Anchor", UIParent)
 root:SetMovable(true)
 root:EnableMouse(true)
 root:RegisterForDrag("LeftButton")
@@ -59,9 +59,9 @@ root:SetScript("OnDragStop", function(self)
 end)
 
 -- Create bars
-local mhBar = NewBar(ADDON.."MH", root, 0.2, 0.7, 1.0)
-local ohBar = NewBar(ADDON.."OH", root, 0.6, 0.4, 1.0)
-local rgBar = NewBar(ADDON.."RG", root, 1.0, 0.7, 0.2)
+local mhBar = NewBar(ADDON_NAME.."MH", root, 0.2, 0.7, 1.0)
+local ohBar = NewBar(ADDON_NAME.."OH", root, 0.6, 0.4, 1.0)
+local rgBar = NewBar(ADDON_NAME.."RG", root, 1.0, 0.7, 0.2)
 
 mhBar.label:SetText("Main-hand")
 ohBar.label:SetText("Off-hand")
@@ -181,7 +181,7 @@ function ns.UpdateAllBars()
     local font = db.fontFace or "GameFontHighlightSmall"
     for _, bar in pairs({mhBar, ohBar, rgBar}) do
         bar:SetStatusBarTexture(tex)
-        if bar.text and bar.text.SetFontObject then
+        if bar.text then
             bar.text:SetFontObject(font)
         end
         if not db.showTimeText then
