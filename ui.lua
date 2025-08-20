@@ -2,6 +2,16 @@
 local ADDON, ns = ...
 local compat = ns and ns.compat or {}
 local db, state
+local C = ns.CONSTANTS or {}
+
+-- Handle `Frame:SetShown` absence on older clients
+local function SafeSetShown(frame, show)
+    if frame.SetShown then
+        frame:SetShown(show)
+    else
+        if show then frame:Show() else frame:Hide() end
+    end
+end
 
 -- Handle `Frame:SetShown` absence on older clients
 local function SafeSetShown(frame, show)
@@ -99,23 +109,48 @@ local function UpdateVisual(bar, remain, duration)
     duration = math.max(0.001, duration or 1)
     local pct = 1 - (remain / duration)
     bar:SetValue(pct)
-    bar.text:SetText(fmtTime(remain))
+
+    if db.showTimeText then
+        bar.text:SetText(fmtTime(remain))
+        bar.text:Show()
+    else
+        bar.text:Hide()
+    end
+
     local w = bar:GetWidth()
-    bar.spark:ClearAllPoints()
-    bar.spark:SetPoint("CENTER", bar, "LEFT", w * pct, 0)
-    if remain > 0 and remain < duration then bar.spark:Show() else bar.spark:Hide() end
+    if db.showSparkEffect then
+        bar.spark:ClearAllPoints()
+        bar.spark:SetPoint("CENTER", bar, "LEFT", w * pct, 0)
+        if remain > 0 and remain < duration then
+            bar.spark:Show()
+        else
+            bar.spark:Hide()
+        end
+    else
+        bar.spark:Hide()
+    end
 end
 
-root:SetScript("OnUpdate", function()
+local lastUpdate = 0
+root:SetScript("OnUpdate", function(self, elapsed)
+    if not db or not state then return end
+
+    lastUpdate = lastUpdate + elapsed
+    local rate = db.updateRate or 0.05
+    if lastUpdate < rate then return end
+    lastUpdate = 0
+
+    if not root:IsVisible() then return end
+
     local now = GetTime()
     if db.showMelee then
-        UpdateVisual(mhBar, (state.mhNext or 0) - now, state.mhSpeed or 2.0)
+        UpdateVisual(mhBar, (state.mhNext or 0) - now, state.mhSpeed or C.DEFAULT_MH_SPEED)
     end
     if db.showOffhand and state.hasOH and state.ohSpeed then
-        UpdateVisual(ohBar, (state.ohNext or 0) - now, state.ohSpeed or 1.5)
+        UpdateVisual(ohBar, (state.ohNext or 0) - now, state.ohSpeed or C.DEFAULT_OH_SPEED)
     end
     if db.showRanged and state.autoRepeat then
-        UpdateVisual(rgBar, (state.rangedNext or 0) - now, state.rangedSpeed or 2.0)
+        UpdateVisual(rgBar, (state.rangedNext or 0) - now, state.rangedSpeed or C.DEFAULT_RANGED_SPEED)
     end
 end)
 
@@ -148,9 +183,26 @@ function ns.UpdateAllBars()
     mhBar.label:SetText("Main-hand")
     ohBar.label:SetText("Off-hand")
     rgBar.label:SetText("Ranged")
+
+    local tex = db.barTexture or "Interface\\TargetingFrame\\UI-StatusBar"
+    local font = db.fontFace or "GameFontHighlightSmall"
+    for _, bar in pairs({mhBar, ohBar, rgBar}) do
+        bar:SetStatusBarTexture(tex)
+        if bar.text and bar.text.SetFontObject then
+            bar.text:SetFontObject(font)
+        end
+        if not db.showTimeText then
+            bar.text:Hide()
+        end
+        if not db.showSparkEffect then
+            bar.spark:Hide()
+        end
+    end
 end
 
 function ns.UpdateVisibility()
+    if not db or not state then return end
+
     local show = db.showOutOfCombat or state.inCombat or state.autoRepeat
     SafeSetShown(root, show)
     SafeSetShown(mhBar, db.showMelee)
