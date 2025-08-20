@@ -61,51 +61,57 @@ local function ToggleTick(self, on)
     if tick then self:CancelTimer(tick) end
     tick = self:ScheduleRepeatingTimer(function() ns.UpdateBars(GetTime(), state) end, 0.05)
   else
-    if tick then self:CancelTimer(tick) end
-    tick = nil
+    if tick then self:CancelTimer(tick); tick = nil end
   end
 end
 
+-- --------------------------- WoW events ------------------------------------
 function SwingTimer:OnInitialize()
-  self.db = LibStub("AceDB-3.0"):New("TacoRotSwingTimerDB", defaults, true)
-  self:RegisterChatCommand("swingtimer", "SlashCommand")
+  self.db = LibStub("AceDB-3.0"):New("SwingTimerDB", defaults, true)
   self:RegisterChatCommand("st", "SlashCommand")
+  self:RegisterChatCommand("swingtimer", "SlashCommand")
 end
 
 function SwingTimer:OnEnable()
   playerGUID = UnitGUID("player")
-  UpdateSpeeds()
-  RebuildUI(self)
-  ToggleTick(self, true)
-
-  -- world/combat state
-  self:RegisterEvent("PLAYER_ENTERING_WORLD", function() playerGUID = UnitGUID("player"); UpdateSpeeds(); ns.UpdateVisibility() end)
-  self:RegisterEvent("PLAYER_REGEN_DISABLED", function() state.inCombat = true;  ns.UpdateVisibility() end)
-  self:RegisterEvent("PLAYER_REGEN_ENABLED",  function() state.inCombat = false; ns.UpdateVisibility() end)
-
-  -- melee auto attack (Wrath)
-  self:RegisterEvent("PLAYER_ENTER_COMBAT", function() state.isMeleeAuto = true;  ns.UpdateVisibility() end)
-  self:RegisterEvent("PLAYER_LEAVE_COMBAT", function() state.isMeleeAuto = false; ns.UpdateVisibility() end)
-
-  -- hunter auto shot toggles
-  self:RegisterEvent("START_AUTOREPEAT_SPELL", function() state.autoRepeat = true;  ns.UpdateVisibility() end)
-  self:RegisterEvent("STOP_AUTOREPEAT_SPELL",  function() state.autoRepeat = false; ns.UpdateVisibility() end)
-
-  -- speed refreshers
-  self:RegisterEvent("UNIT_ATTACK_SPEED", function(_,u) if u=="player" then UpdateSpeeds() end end)
-  self:RegisterEvent("UNIT_INVENTORY_CHANGED", function(_,u) if u=="player" then UpdateSpeeds() end end)
-  if UnitRangedAttackSpeed then
-    self:RegisterEvent("UNIT_RANGEDDAMAGE", function(_,u) if u=="player" then UpdateSpeeds() end end)
-  end
-
-  -- combat log (3.3.5 header)
   self:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+  self:RegisterEvent("PLAYER_REGEN_ENABLED")
+  self:RegisterEvent("PLAYER_REGEN_DISABLED")
+  self:RegisterEvent("PLAYER_ENTER_COMBAT")
+  self:RegisterEvent("PLAYER_LEAVE_COMBAT")
+  self:RegisterEvent("START_AUTOREPEAT_SPELL")
+  self:RegisterEvent("STOP_AUTOREPEAT_SPELL")
+  self:RegisterEvent("UNIT_ATTACK_SPEED")
+  self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+  self:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
+  
+  UpdateSpeeds(); RebuildUI(self)
 end
 
 function SwingTimer:OnDisable()
   ToggleTick(self, false)
-  local root = ns.GetUI and ns.GetUI(); if root then root:Hide() end
 end
+
+-- combat state
+function SwingTimer:PLAYER_REGEN_DISABLED() state.inCombat = true; ToggleTick(self, true); ns.UpdateVisibility() end
+function SwingTimer:PLAYER_REGEN_ENABLED()  state.inCombat = false; ToggleTick(self, false); ns.UpdateVisibility() end
+function SwingTimer:PLAYER_ENTER_COMBAT()   state.isMeleeAuto = true end
+function SwingTimer:PLAYER_LEAVE_COMBAT()   state.isMeleeAuto = false end
+
+-- ranged auto-attacks
+function SwingTimer:START_AUTOREPEAT_SPELL() state.autoRepeat = true end
+function SwingTimer:STOP_AUTOREPEAT_SPELL()  state.autoRepeat = false end
+
+-- weapon changes
+function SwingTimer:UNIT_ATTACK_SPEED(event, unit)
+  if unit == "player" then UpdateSpeeds() end
+end
+
+function SwingTimer:PLAYER_EQUIPMENT_CHANGED(event, slot)
+  if slot == 16 or slot == 17 or slot == 18 then UpdateSpeeds() end
+end
+
+function SwingTimer:ACTIVE_TALENT_GROUP_CHANGED() UpdateSpeeds() end
 
 -- combat log (Wrath varargs)
 function SwingTimer:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
@@ -182,8 +188,15 @@ function SwingTimer:SlashCommand(input)
     pr(self, (on and "Showing " or "Hiding ")..which.." bar.")
   end
 
-  local which, val = input:match("^(mh|oh|rg)%s+(on|off)$")
-  if which and val then setbar(which, val=="on"); return end
+  -- Fixed pattern matching for bar visibility commands
+  if input:match("^mh%s+on$") then setbar("mh", true); return end
+  if input:match("^mh%s+off$") then setbar("mh", false); return end
+  if input:match("^oh%s+on$") then setbar("oh", true); return end
+  if input:match("^oh%s+off$") then setbar("oh", false); return end
+  if input:match("^rg%s+on$") then setbar("rg", true); return end
+  if input:match("^rg%s+off$") then setbar("rg", false); return end
+  if input:match("^ranged%s+on$") then setbar("rg", true); return end
+  if input:match("^ranged%s+off$") then setbar("rg", false); return end
 
   if cmd=="test" then
     local now = GetTime()
