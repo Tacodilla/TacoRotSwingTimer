@@ -4,5 +4,4 @@
 ## Author: Steven
 ## Version: 1.0.0
 ## SavedVariables: SwingTimerDB
-
 SwingTimer.xml
