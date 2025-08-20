@@ -1,8 +1,10 @@
 -- Compat-335.lua
--- Helpers that avoid retail-only APIs (e.g., SetColorTexture).
-
+local ADDON_NAME = "TacoRotSwingTimer"
 local _, ns = ...
+if not ns then ns = _G[ADDON_NAME] or {} end
 ns.compat = {}
+
+-- Helpers that avoid retail-only APIs (e.g., SetColorTexture).
 
 function ns.compat.SetTexColor(tex, r, g, b, a)
     if not tex then return end
