@@ -1,5 +1,7 @@
 -- ui.lua
-local ADDON, ns = ...
+local ADDON_NAME = "TacoRotSwingTimer"
+local SwingTimer = _G[ADDON_NAME] and _G[ADDON_NAME].SwingTimer
+local ns = _G[ADDON_NAME]
 local compat = ns and ns.compat or {}
 local db, state
 local C = ns.CONSTANTS or {}
