@@ -12,35 +12,34 @@ _G[ADDON_NAME] = ns
 
 -- constants
 local C = {
-  AUTO_SHOT = 75,
+  AUTO_SHOT = 75,         -- spellID
   DEF_MH = 2.0, DEF_OH = 1.5, DEF_R = 2.0,
 }
 
--- runtime state (read by UI)
+-- runtime state (persisted via AceDB)
 local state = {
-  mhSpeed=C.DEF_MH, ohSpeed=C.DEF_OH, rangedSpeed=C.DEF_R,
+  mhSpeed=2.0, ohSpeed=1.5, rangedSpeed=2.0,
   mhNext=0, ohNext=0, rangedNext=0,
-  hasOH=false, lastHand="MH",
+  mhLast=nil, ohLast=nil, rangedLast=nil,
+  lastHand="MH",
   inCombat=false, isMeleeAuto=false, autoRepeat=false,
+  timeOffset=nil, -- GetTime() - CLEU timestamp (smoothed)
 }
 ns.GetState = function() return state end
 
--- DB defaults (added per-bar size + gap + toggles)
+-- DB defaults
 local defaults = {
   profile = {
+    updateRate=1/60,
     locked=false, scale=1.0, alpha=1.0,
     width=240, barHeight=18, gap=6,
     posX=0, posY=120,
-
     showOutOfCombat=true,
-    showMelee=true,      -- Main-Hand
-    showOffhand=true,    -- Off-Hand
-    showRanged=true,     -- Ranged
+    showMelee=true, showOffhand=true, showRanged=true,
     fontSize=12,
   }
 }
 
-local function num(x) return tonumber(x) end
 local function pr(self, msg) self:Print(msg) end
 
 -- speeds
@@ -52,17 +51,30 @@ local function UpdateSpeeds()
     local rs = UnitRangedAttackSpeed("player")
     if rs and rs>0 then state.rangedSpeed = rs end
   end
+  -- if speed changes mid-swing, recompute next by anchoring to last swing start
+  if state.mhLast then state.mhNext = state.mhLast + (state.mhSpeed or C.DEF_MH) end
+  if state.ohLast then state.ohNext = state.ohLast + (state.ohSpeed or C.DEF_OH) end
+  if state.rangedLast then state.rangedNext = state.rangedLast + (state.rangedSpeed or C.DEF_R) end
+end
+
+-- local mapping of CLEU timestamp -> GetTime() space
+local function localEventTime(cleuTS)
+  local now = GetTime()
+  local estOffset = now - cleuTS
+  if not state.timeOffset then
+    state.timeOffset = estOffset
+  else
+    -- gentle EMA to avoid jumps
+    state.timeOffset = state.timeOffset * 0.98 + estOffset * 0.02
+  end
+  return cleuTS + state.timeOffset
 end
 
 local playerGUID, tick
 local function RebuildUI(self) ns.BuildUI(self.db.profile, state); ns.ApplyDimensions(); ns.UpdateVisibility() end
 local function ToggleTick(self, on)
-  if on then
-    if tick then self:CancelTimer(tick) end
-    tick = self:ScheduleRepeatingTimer(function() ns.UpdateBars(GetTime(), state) end, 0.05)
-  else
-    if tick then self:CancelTimer(tick); tick = nil end
-  end
+  if tick then self:CancelTimer(tick); tick = nil end
+  -- UI's smooth driver handles animation; no periodic tick needed.
 end
 
 -- --------------------------- WoW events ------------------------------------
@@ -84,8 +96,9 @@ function SwingTimer:OnEnable()
   self:RegisterEvent("UNIT_ATTACK_SPEED")
   self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
   self:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
-  
+
   UpdateSpeeds(); RebuildUI(self)
+  if ns.SetUpdateRate and self.db and self.db.profile then ns.SetUpdateRate(self.db.profile.updateRate or (1/60)) end
 end
 
 function SwingTimer:OnDisable()
@@ -97,49 +110,84 @@ function SwingTimer:PLAYER_REGEN_DISABLED() state.inCombat = true; ToggleTick(se
 function SwingTimer:PLAYER_REGEN_ENABLED()  state.inCombat = false; ToggleTick(self, false); ns.UpdateVisibility() end
 function SwingTimer:PLAYER_ENTER_COMBAT()   state.isMeleeAuto = true end
 function SwingTimer:PLAYER_LEAVE_COMBAT()   state.isMeleeAuto = false end
-
--- ranged auto-attacks
 function SwingTimer:START_AUTOREPEAT_SPELL() state.autoRepeat = true end
 function SwingTimer:STOP_AUTOREPEAT_SPELL()  state.autoRepeat = false end
-
--- weapon changes
-function SwingTimer:UNIT_ATTACK_SPEED(event, unit)
-  if unit == "player" then UpdateSpeeds() end
-end
-
-function SwingTimer:PLAYER_EQUIPMENT_CHANGED(event, slot)
-  if slot == 16 or slot == 17 or slot == 18 then UpdateSpeeds() end
-end
-
+function SwingTimer:UNIT_ATTACK_SPEED() UpdateSpeeds() end
+function SwingTimer:PLAYER_EQUIPMENT_CHANGED() UpdateSpeeds() end
 function SwingTimer:ACTIVE_TALENT_GROUP_CHANGED() UpdateSpeeds() end
 
--- combat log (Wrath varargs)
-function SwingTimer:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
-  local p = {...}
-  local eventType, sourceGUID = p[2], p[3]
-  if sourceGUID ~= playerGUID then return end
+-- helpers
+local function clampPeriod(base, observed)
+  if not base or base <= 0 then base = 2.0 end
+  local minP = base * 0.40  -- parry-haste can shorten a lot
+  local maxP = base * 1.60
+  if not observed or observed <= 0 then return base end
+  if observed < minP then return minP end
+  if observed > maxP then return maxP end
+  return observed
+end
 
-  local now = GetTime()
+local function assignHand(t)
+  if not state.hasOH then return "MH" end
+  local dn = math.huge
+  local hand = state.lastHand == "MH" and "OH" or "MH"  -- fallback toggle
+  if state.mhNext then
+    local d = math.abs(t - state.mhNext); if d < dn then dn = d; hand = "MH" end
+  end
+  if state.ohNext then
+    local d = math.abs(t - state.ohNext); if d < dn then dn = d; hand = "OH" end
+  end
+  return hand
+end
+
+-- --------------------------- Combat Log (Wrath 3.3.5a) ---------------------
+-- Header order: timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, ...
+local function OnCLEU(timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, ...)
+  if srcGUID ~= playerGUID then return end
+  local t = localEventTime(timestamp)
 
   if eventType == "SWING_DAMAGE" or eventType == "SWING_MISSED" then
-    if state.hasOH and state.lastHand == "MH" then
-      state.ohNext = now + (state.ohSpeed or C.DEF_OH); state.lastHand = "OH"
+    local hand = assignHand(t)
+    if hand == "MH" then
+      local base = state.mhSpeed or C.DEF_MH
+      local observed = state.mhLast and (t - state.mhLast) or base
+      local period = clampPeriod(base, observed)
+      state.mhLast = t
+      state.mhNext = t + period
+      state.lastHand = "MH"
     else
-      state.mhNext = now + (state.mhSpeed or C.DEF_MH); state.lastHand = "MH"
-    end
-
-  elseif eventType == "SPELL_CAST_SUCCESS" then
-    local spellId = p[9]
-    if spellId == C.AUTO_SHOT and state.autoRepeat then
-      state.rangedNext = now + (state.rangedSpeed or C.DEF_R)
+      local base = state.ohSpeed or C.DEF_OH
+      local observed = state.ohLast and (t - state.ohLast) or base
+      local period = clampPeriod(base, observed)
+      state.ohLast = t
+      state.ohNext = t + period
+      state.lastHand = "OH"
     end
 
   elseif eventType == "RANGE_DAMAGE" or eventType == "RANGE_MISSED" then
-    if state.autoRepeat then state.rangedNext = now + (state.rangedSpeed or C.DEF_R) end
+    local base = state.rangedSpeed or C.DEF_R
+    local observed = state.rangedLast and (t - state.rangedLast) or base
+    local period = clampPeriod(base, observed)
+    state.rangedLast = t
+    state.rangedNext = t + period
+
+  elseif eventType == "SPELL_CAST_SUCCESS" then
+    -- Some servers emit Auto Shot success; harmless to set here too.
+    local spellId = ...
+    if spellId == C.AUTO_SHOT and state.autoRepeat then
+      local base = state.rangedSpeed or C.DEF_R
+      state.rangedLast = t
+      state.rangedNext = t + base
+    end
   end
 end
 
--- --------------------------- slash commands --------------------------------
+-- AceEvent passes (self, event, ...)
+function SwingTimer:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
+  OnCLEU(...)
+end
+
+-- --------------------------- Commands --------------------------------------
 local function help(self)
   pr(self, "|cffffd200TacoRotSwingTimer:|r")
   pr(self, "/st lock|unlock       - lock movement")
@@ -149,6 +197,7 @@ local function help(self)
   pr(self, "/st width <px>       - bar width")
   pr(self, "/st height <px>      - bar height")
   pr(self, "/st gap <px>         - space between bars")
+  pr(self, "/st fps <15-240>     - animation FPS (default 60)")
   pr(self, "/st show ooc         - toggle always-visible out of combat")
   pr(self, "/st mh on|off        - show/hide Main-Hand bar")
   pr(self, "/st oh on|off        - show/hide Off-Hand bar")
@@ -167,6 +216,14 @@ function SwingTimer:SlashCommand(input)
 
   local cmd, arg = input:match("^(%S+)%s*(.*)$")
   local narg = tonumber(arg)
+
+  if cmd=="fps" and narg then
+    local fps = math.max(15, math.min(240, narg))
+    db.updateRate = 1 / fps
+    if ns.SetUpdateRate then ns.SetUpdateRate(db.updateRate) end
+    pr(self, "Animation FPS set to "..fps)
+    return
+  end
 
   if cmd=="scale" and narg then db.scale=narg; ns.ApplyDimensions(); pr(self,("Scale %.2f"):format(narg)); return end
   if cmd=="alpha" and narg then db.alpha=narg; ns.ApplyDimensions(); pr(self,("Alpha %.2f"):format(narg)); return end
@@ -188,7 +245,6 @@ function SwingTimer:SlashCommand(input)
     pr(self, (on and "Showing " or "Hiding ")..which.." bar.")
   end
 
-  -- Fixed pattern matching for bar visibility commands
   if input:match("^mh%s+on$") then setbar("mh", true); return end
   if input:match("^mh%s+off$") then setbar("mh", false); return end
   if input:match("^oh%s+on$") then setbar("oh", true); return end
@@ -200,9 +256,9 @@ function SwingTimer:SlashCommand(input)
 
   if cmd=="test" then
     local now = GetTime()
-    state.mhNext = now + (state.mhSpeed or C.DEF_MH)
-    if state.hasOH then state.ohNext = now + (state.ohSpeed or C.DEF_OH) end
-    state.rangedNext = now + (state.rangedSpeed or C.DEF_R)
+    state.mhLast = now;     state.mhNext = now + (state.mhSpeed or C.DEF_MH)
+    if state.hasOH then state.ohLast = now; state.ohNext = now + (state.ohSpeed or C.DEF_OH) end
+    state.rangedLast = now; state.rangedNext = now + (state.rangedSpeed or C.DEF_R)
     ns.UpdateBars(now, state); ns.UpdateVisibility(); pr(self,"Test pulses queued."); return
   end
 

@@ -14,125 +14,95 @@ local frames = {}  -- key -> {frame, bar, left, right, spark}
 local COLORS = {
   mh = {0.90, 0.20, 0.20},
   oh = {0.20, 0.55, 0.95},
-  rg = {1.00, 0.85, 0.20},
+  rg = {0.95, 0.85, 0.20},
 }
-local TITLES = { mh="Main-Hand", oh="Off-Hand", rg="Ranged" }
 
-local function SafeSetShown(f, on) 
-  if f then 
-    if on then 
-      f:Show() 
-    else 
-      f:Hide() 
-    end 
-  end 
+local function tex(frame)
+  local t = frame:CreateTexture(nil, "BACKGROUND")
+  t:SetAllPoints(true)
+  return t
 end
 
-local function ApplyBackdrop(frame, alpha)
-  if compat and compat.ApplyBackdrop then compat.ApplyBackdrop(frame, alpha); return end
-  if frame.SetBackdrop then
-    frame:SetBackdrop({
-      bgFile="Interface\\ChatFrame\\ChatFrameBackground",
-      edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",
-      tile=true, tileSize=16, edgeSize=12,
-      insets={left=2,right=2,top=2,bottom=2},
-    })
-    frame:SetBackdropColor(0,0,0, alpha or 0.75)
-  end
-end
-
-local function NewSingleFrame(key)
-  local f = CreateFrame("Frame", "TRST_"..key:upper(), UIParent)
-  f:SetFrameStrata("MEDIUM")
+local function mkbar(parent, key)
+  local f = CreateFrame("Frame", ADDON_NAME.."_"..key, UIParent)
   f:SetMovable(true); f:EnableMouse(true)
-  ApplyBackdrop(f, 0.75)
+  f:RegisterForDrag("LeftButton")
+  f:SetScript("OnDragStart", function(self) if not db.locked then self:StartMoving() end end)
+  f:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    local x, y = self:GetCenter()
+    db.posX = math.floor(x - UIParent:GetWidth()/2 + 0.5)
+    db.posY = math.floor(y - UIParent:GetHeight()/2 + 0.5)
+  end)
+
+  compat.ApplyBackdrop(f, 0.6)
 
   local bar = CreateFrame("StatusBar", nil, f)
-  bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-  bar:SetMinMaxValues(0,1); bar:SetValue(0)
-  bar:SetPoint("TOPLEFT", f, "TOPLEFT", 5, -5)
-  bar:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -5, 5)
+  bar:SetPoint("TOPLEFT", 4, -4)
+  bar:SetPoint("BOTTOMRIGHT", -4, 4)
+  bar:SetMinMaxValues(0, 1); bar:SetValue(0)
 
-  local bg = bar:CreateTexture(nil, "BACKGROUND")
-  bg:SetAllPoints(bar)
-  if compat and compat.SetTexColor then compat.SetTexColor(bg, 0,0,0, 0.45) else bg:SetTexture(0,0,0,0.45) end
+  local back = bar:CreateTexture(nil, "ARTWORK")
+  back:SetAllPoints(true)
+  compat.SetTexColor(back, 0.2, 0.2, 0.2, 0.9) -- neutral gray background
 
-  local r,g,b = unpack(COLORS[key])
-  local tex = bar:GetStatusBarTexture()
-  if tex and tex.SetVertexColor then tex:SetVertexColor(r,g,b,0.95) end
+  local fill = bar:CreateTexture(nil, "BORDER")
+  bar:SetStatusBarTexture(fill)
+  local c = COLORS[key] or {0.7,0.7,0.7}
+  fill:SetTexture(c[1], c[2], c[3], 1)
 
-  local left = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  local fontPath = select(1,left:GetFont())
-  left:SetFont(fontPath, (db and db.fontSize or 12), "OUTLINE")
-  left:SetPoint("LEFT", bar, "LEFT", 4, 0)
-  left:SetText(TITLES[key])
-
+  local left  = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   local right = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  right:SetFont(fontPath, (db and db.fontSize or 12), "OUTLINE")
-  right:SetPoint("RIGHT", bar, "RIGHT", -4, 0)
-  right:SetText("")
+  left:SetPoint("LEFT", 6, 0); right:SetPoint("RIGHT", -6, 0)
 
-  local spark = bar:CreateTexture(nil, "ARTWORK")
-  if compat and compat.SetTexColor then compat.SetTexColor(spark, 0,1,0, 1) else spark:SetTexture(0,1,0,1) end
-  spark:SetWidth(10); spark:SetHeight(14)
-  spark:SetPoint("CENTER", bar, "LEFT", 0, 0)
+  local spark = bar:CreateTexture(nil, "OVERLAY")
+  spark:SetTexture("Interface\\CastingBar\\UI-CastingBar-Spark")
+  spark:SetBlendMode("ADD")
+  spark:SetWidth(20); spark:SetHeight(30); spark:Hide()
 
-  f:SetScript("OnMouseDown", function(self, btn)
-    if btn=="LeftButton" and not db.locked then self:StartMoving() end
-  end)
-  f:SetScript("OnMouseUp", function(self)
-    self:StopMovingOrSizing()
-    local _,_,_,x,y = self:GetPoint(1)
-    if key=="mh" then db.mhX, db.mhY = x or 0, y or 0
-    elseif key=="oh" then db.ohX, db.ohY = x or 0, y or 0
-    else db.rgX, db.rgY = x or 0, y or 0
-    end
-  end)
-
-  return {frame=f, bar=bar, left=left, right=right, spark=spark}
-end
-
--- sizing/placement helpers
-local function size_one(o)
-  if not o or not o.frame then return end
-  local h = (db.barHeight or 18) + 10
-  o.frame:SetWidth(db.width or 240)
-  o.frame:SetHeight(h)
+  frames[key] = { frame=f, bar=bar, left=left, right=right, spark=spark }
+  return frames[key]
 end
 
 local function place_one(key, o)
-  if not o or not o.frame then return end
+  local x = (db.posX or 0) + UIParent:GetWidth()/2
+  local y = (db.posY or 120) + UIParent:GetHeight()/2
+  local dy = (key=="mh" and 0) or (key=="oh" and -(db.barHeight+db.gap)) or (key=="rg" and (db.barHeight+db.gap)) or 0
   o.frame:ClearAllPoints()
-  if key=="mh" then
-    o.frame:SetPoint("CENTER", UIParent, "CENTER", db.mhX or 0, db.mhY or 120)
-  elseif key=="oh" then
-    o.frame:SetPoint("CENTER", UIParent, "CENTER", db.ohX or 0, db.ohY or 84)
-  else
-    o.frame:SetPoint("CENTER", UIParent, "CENTER", db.rgX or 0, db.rgY or 48)
-  end
+  o.frame:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y + dy)
 end
 
--- public API
-function ns.BuildUI(profile, _state)
-  db, state = profile, _state
+local function fmt(sec)
+  if not sec or sec < 0 then return "" end
+  if sec >= 10 then return string.format("%.1f", sec)
+  else return string.format("%.2f", sec) end
+end
 
-  -- if already built, hide & release
-  ns.HideAll()
-
-  -- create/refresh three independent frames
-  frames.mh = NewSingleFrame("mh")
-  frames.oh = NewSingleFrame("oh")
-  frames.rg = NewSingleFrame("rg")
+function ns.BuildUI(cfg, st)
+  db, state = cfg, st
+  if not frames.mh then mkbar("UIParent", "mh") end
+  if not frames.oh then mkbar("UIParent", "oh") end
+  if not frames.rg then mkbar("UIParent", "rg") end
 
   ns.ApplyDimensions()
   ns.UpdateVisibility()
 
-  -- lightweight animation tick per frame (backup in case core tick is paused)
-  local acc = 0
-  for _,o in pairs(frames) do
-    o.frame:SetScript("OnUpdate", function(_,elapsed)
-      acc = acc + elapsed; if acc < 0.05 then return end; acc = 0
-      if ns.GetState then ns.UpdateBars(GetTime(), ns.GetState()) end
+  -- smooth animation driver (single, shared)
+  if not ns._driver then
+    ns._driver = CreateFrame("Frame")
+    ns._updateRate = ns._updateRate or (1/60) -- default ~60 FPS
+    ns._acc = 0
+    ns._driver:SetScript("OnUpdate", function(_, elapsed)
+      local step = ns._updateRate or 0
+      if step <= 0 then
+        if ns.GetState then ns.UpdateBars(GetTime(), ns.GetState()) end
+        return
+      end
+      ns._acc = ns._acc + elapsed
+      if ns._acc >= step then
+        ns._acc = 0
+        if ns.GetState then ns.UpdateBars(GetTime(), ns.GetState()) end
+      end
     end)
   end
 
@@ -144,72 +114,93 @@ local function apply(o, now, nextAt, period)
     if o then o.bar:SetValue(0); o.right:SetText(""); o.spark:Hide() end
     return
   end
+  local remaining = math.max(0, (nextAt or now) - now)
+  local t = 1 - math.min(1, remaining / period)
+  o.bar:SetValue(t)
 
-  local remain = (nextAt or 0) - now + (db.visualLag or 0)
-  local frac = 1 - (remain / period)
-  if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+  -- spark glide
+  local barW = (db.width or 240) - 8
+  local sx = 4 + barW * t
+  o.spark:ClearAllPoints()
+  o.spark:SetPoint("CENTER", o.bar, "LEFT", sx, 0)
+  o.spark:SetAlpha(0.8)
+  if remaining > 0 then o.spark:Show() else o.spark:Hide() end
 
-  o.bar:SetValue(frac)
-  if remain and remain > 0 then
-    o.right:SetText(string.format("%.1f", remain))
-  else
-    o.right:SetText("")
+  o.right:SetText(fmt(remaining))
+end
+
+function ns.UpdateBars(now, st)
+  state = st or state
+  if not state then return end
+
+  local mh = frames.mh
+  local oh = frames.oh
+  local rg = frames.rg
+
+  -- Use observed periods when available (next - last), else fallback to base speeds.
+  local mPer = (state.mhNext and state.mhLast) and (state.mhNext - state.mhLast) or (state.mhSpeed or 2.0)
+  local oPer = (state.ohNext and state.ohLast) and (state.ohNext - state.ohLast) or (state.ohSpeed or 1.5)
+  local rPer = (state.rangedNext and state.rangedLast) and (state.rangedNext - state.rangedLast) or (state.rangedSpeed or 2.0)
+
+  if mh then
+    mh.left:SetText("MH")
+    apply(mh, now, state.mhNext, mPer)
+  end
+  if oh and state.hasOH then
+    oh.left:SetText("OH")
+    apply(oh, now, state.ohNext, oPer)
+  elseif oh then
+    oh.bar:SetValue(0); oh.right:SetText(""); oh.spark:Hide()
+  end
+  if rg then
+    rg.left:SetText("Ranged")
+    apply(rg, now, state.rangedNext, rPer)
+  end
+end
+
+-- Show/Hide version (3.3.5a compatible)
+function ns.UpdateVisibility()
+  if not db then return end
+  local inCombat = state and state.inCombat
+  local showOOC  = db.showOutOfCombat
+
+  local function set_shown(f, want)
+    if not f then return end
+    if want then f:Show() else f:Hide() end
   end
 
-  local w = o.bar:GetWidth() or 0
-  o.spark:ClearAllPoints()
-  o.spark:SetPoint("CENTER", o.bar, "LEFT", frac * w, 0)
-  o.spark:Show()
-end
+  -- MH
+  if frames.mh then
+    set_shown(frames.mh.frame, db.showMelee and (showOOC or inCombat))
+  end
 
-function ns.UpdateBars(now, s)
-  if not frames or not s then return end
-  if frames.mh then apply(frames.mh, now, s.mhNext, s.mhSpeed) end
-  if s.hasOH and frames.oh then apply(frames.oh, now, s.ohNext, s.ohSpeed) end
-  if frames.rg then apply(frames.rg, now, s.rangedNext, s.rangedSpeed) end
-  ns.UpdateVisibility()
-end
+  -- OH (requires actual offhand equipped unless you remove hasOH check)
+  if frames.oh then
+    local hasOH = state and state.hasOH
+    set_shown(frames.oh.frame, db.showOffhand and hasOH and (showOOC or inCombat))
+  end
 
--- Fixed UpdateVisibility function with better logic and debugging
-function ns.UpdateVisibility()
-  if not db or not state or not frames then return end
-  
-  -- Calculate base visibility condition
-  local baseShow = db.showOutOfCombat or state.inCombat or state.isMeleeAuto or state.autoRepeat
-
-  -- Individual frame visibility with explicit boolean checks
-  local showMH = baseShow and (db.showMelee == true or (db.showMelee ~= false and db.showMelee == nil))
-  local showOH = baseShow and (db.showOffhand == true or (db.showOffhand ~= false and db.showOffhand == nil)) and (state.hasOH == true)
-  local showRG = baseShow and (db.showRanged == true or (db.showRanged ~= false and db.showRanged == nil))
-
-  -- Apply visibility
-  SafeSetShown(frames.mh and frames.mh.frame, showMH)
-  SafeSetShown(frames.oh and frames.oh.frame, showOH)
-  SafeSetShown(frames.rg and frames.rg.frame, showRG)
+  -- Ranged
+  if frames.rg then
+    set_shown(frames.rg.frame, db.showRanged and (showOOC or inCombat))
+  end
 end
 
 function ns.ApplyDimensions()
-  if not frames then return end
-  for _,o in pairs(frames) do
-    if o and o.frame then
-      o.frame:SetScale(db.scale or 1.0)
-      o.frame:SetAlpha(db.alpha or 1.0)
-      size_one(o)
-    end
+  if not db then return end
+  local w, h, s, a = db.width or 240, db.barHeight or 18, db.scale or 1, db.alpha or 1
+  for key,o in pairs(frames) do
+    o.frame:SetScale(s); o.frame:SetAlpha(a)
+    o.frame:SetWidth(w + 8); o.frame:SetHeight(h + 8)
+    o.left:SetFont("Fonts\\FRIZQT__.TTF", db.fontSize or 12, "OUTLINE")
+    o.right:SetFont("Fonts\\FRIZQT__.TTF", db.fontSize or 12, "OUTLINE")
   end
-  for k,o in pairs(frames) do place_one(k, o) end
 end
 
-function ns.Lock(lock)
+function ns.Lock(locked)
   if not frames then return end
   for _,o in pairs(frames) do
-    if o and o.frame then
-      if lock then
-        o.frame:EnableMouse(false)
-      else
-        o.frame:EnableMouse(true)
-      end
-    end
+    o.frame:EnableMouse(not locked)
   end
 end
 
@@ -224,6 +215,11 @@ end
 -- Add GetFrames function for debugging
 function ns.GetFrames()
   return frames
+end
+
+-- Smooth update rate setter
+function ns.SetUpdateRate(secPerTick)
+  ns._updateRate = tonumber(secPerTick) or (1/60)
 end
 
 -- compatibility getters (not used by core anymore but kept for safety)
