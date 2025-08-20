@@ -189,10 +189,10 @@ f:SetScript("OnEvent", function(self, event, ...)
         ns.UpdateVisibility()
 
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
-        local eventInfo = {CombatLogGetCurrentEventInfo()}
-        if not eventInfo[1] then return end
+        -- In 3.3.5a, combat log arguments are passed directly to the event handler
+        local timestamp, subevent, hideCaster, srcGUID, sourceName, sourceFlags, sourceRaidFlags,
+              destGUID, destName, destFlags, destRaidFlags, spellId, spellName, spellSchool = ...
 
-        local _, subevent, _, srcGUID = unpack(eventInfo)
         if srcGUID == playerGUID then
             local now = GetTime()
             if subevent == "SWING_DAMAGE" or subevent == "SWING_MISSED" then
@@ -204,7 +204,7 @@ f:SetScript("OnEvent", function(self, event, ...)
                 end
                 state.lastHand = hand
             elseif subevent == "SPELL_CAST_SUCCESS" then
-                local spellId = eventInfo[12]
+                -- spellId is now directly available from the event arguments
                 if spellId == CONSTANTS.AUTO_SHOT_SPELL_ID then
                     state.rangedNext = now + (state.rangedSpeed or CONSTANTS.DEFAULT_RANGED_SPEED)
                 end
