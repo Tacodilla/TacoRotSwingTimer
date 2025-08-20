@@ -1,371 +1,266 @@
--- core.lua - Fixed Ace3 Integration
+-- ui.lua - Fixed for Ace3 Integration
 local ADDON_NAME = "TacoRotSwingTimer"
-local SwingTimer = LibStub("AceAddon-3.0"):NewAddon(ADDON_NAME, "AceEvent-3.0", "AceTimer-3.0", "AceConsole-3.0")
-local AceDB = LibStub("AceDB-3.0")
+local ns = _G[ADDON_NAME]
+local compat = ns and ns.compat or {}
+local SwingTimer = ns and ns.SwingTimer
 
--- Create namespace
-local ns = {}
-_G[ADDON_NAME] = ns
-ns.SwingTimer = SwingTimer
+-- Variables that will be initialized when UI is created
+local db, state
+local root, mhBar, ohBar, rgBar
+local C = ns.CONSTANTS or {}
 
-local CONSTANTS = {
-    DEFAULT_MH_SPEED = 2.0,
-    DEFAULT_OH_SPEED = 1.5,
-    DEFAULT_RANGED_SPEED = 2.0,
-    OH_STAGGER_MULTIPLIER = 0.5,
-    AUTO_SHOT_SPELL_ID = 75,
-    MIN_SCALE = 0.5,
-    MAX_SCALE = 3.0,
-    MIN_ALPHA = 0.2,
-    MAX_ALPHA = 1.0,
-}
-ns.CONSTANTS = CONSTANTS
-
--- Default config for AceDB
-local defaults = {
-    profile = {
-        locked = false,
-        scale = 1.0,
-        alpha = 1.0,
-        showMelee = true,
-        showOffhand = true,
-        showRanged = true,
-        showOutOfCombat = false,
-        width = 260,
-        height = 14,
-        point = {"CENTER", UIParent, "CENTER", 0, -170},
-        updateRate = 0.05,
-        showSparkEffect = true,
-        showTimeText = true,
-        barTexture = "Interface\\TargetingFrame\\UI-StatusBar",
-        fontFace = "GameFontHighlightSmall",
-    }
-}
-
--- State variables
-local playerGUID
-local state = {
-    mhSpeed = CONSTANTS.DEFAULT_MH_SPEED, 
-    ohSpeed = nil, 
-    rangedSpeed = CONSTANTS.DEFAULT_RANGED_SPEED,
-    mhNext = 0, 
-    ohNext = 0, 
-    rangedNext = 0,
-    hasOH = false,
-    autoRepeat = false,
-    lastHand = "MH",
-    inCombat = false,
-}
-
-local ui = {}
-
--- Namespace accessors
-ns.GetUI = function() return ui end
-ns.GetState = function() return state end
-ns.GetConfig = function() return SwingTimer.db.profile end
-
--- Ace3 addon lifecycle
-function SwingTimer:OnInitialize()
-    self.db = AceDB:New("SwingTimerDB", defaults, true)
-    self:RegisterChatCommand("swingtimer", "SlashCommand")
-    self:RegisterChatCommand("st", "SlashCommand")
-    
-    playerGUID = UnitGUID("player")
-    
-    -- Initialize UI namespace functions (but don't create frames yet)
-    self:SetupNamespaceFunctions()
-end
-
-function SwingTimer:OnEnable()
-    -- Register events
-    self:RegisterEvent("PLAYER_ENTERING_WORLD", "UpdateWeaponInfo")
-    self:RegisterEvent("UNIT_INVENTORY_CHANGED", "OnInventoryChanged")
-    self:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-    self:RegisterEvent("PLAYER_REGEN_DISABLED")
-    self:RegisterEvent("PLAYER_REGEN_ENABLED")
-    self:RegisterEvent("START_AUTOREPEAT_SPELL")
-    self:RegisterEvent("STOP_AUTOREPEAT_SPELL")
-    
-    -- NOW create and initialize the UI
-    self:InitializeUI()
-    
-    -- Update initial state
-    self:UpdateWeaponInfo()
-    self:RefreshConfig()
-    
-    self:Print(ADDON_NAME .. " v1.0.0 loaded! Use /swingtimer for options.")
-end
-
-function SwingTimer:OnDisable()
-    if ns.GetUI and ns.GetUI().root then
-        ns.GetUI().root:Hide()
+-- Handle Frame:SetShown absence on older clients
+local function SafeSetShown(frame, show)
+    if frame.SetShown then
+        frame:SetShown(show)
+    else
+        if show then frame:Show() else frame:Hide() end
     end
 end
 
--- NEW: Initialize UI after Ace3 is ready
-function SwingTimer:InitializeUI()
-    -- Create the UI elements
-    ui = ns.CreateUI()
-    
-    -- Configure the UI with our database
-    ns.RefreshConfig()
-    ns.RestorePosition()
-    ns.UpdateLockState()
-    ns.UpdateScaleAlpha()
-    ns.UpdateAllBars()
-    ns.UpdateVisibility()
-    ns.ApplyDimensions()
+-- Build one WST-style status bar
+local function NewBar(name, parent, r, g, b)
+    local bar = CreateFrame("StatusBar", name, parent)
+    bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+    bar:SetMinMaxValues(0, 1)
+    bar:SetValue(0)
+
+    compat.ApplyBackdrop(bar, 0.7)
+
+    bar.bg = bar:CreateTexture(nil, "BACKGROUND")
+    bar.bg:SetAllPoints(true)
+    compat.SetTexColor(bar.bg, 0, 0, 0, 0.5)
+
+    bar.text = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bar.text:SetPoint("CENTER", bar, "CENTER", 0, 0)
+    bar.text:SetText("")
+
+    bar.label = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    bar.label:SetPoint("LEFT", bar, "LEFT", 4, 0)
+    bar.label:SetTextColor(0.9, 0.9, 0.9)
+
+    bar.spark = bar:CreateTexture(nil, "OVERLAY")
+    bar.spark:SetTexture("Interface\\CastingBar\\UI-CastingBar-Spark")
+    bar.spark:SetBlendMode("ADD")
+    bar.spark:SetWidth(12)
+    bar.spark:Hide()
+
+    bar:SetStatusBarColor(r, g, b, 1)
+    return bar
 end
 
--- Set up namespace functions that UI will use
-function SwingTimer:SetupNamespaceFunctions()
-    -- These functions will be called by ui.lua after frames are created
-    function ns.RefreshConfig()
-        -- This is called by UI after frames exist
-    end
+-- Layout helper respecting config width/height
+local function LayoutBars()
+    if not db or not root then return end
     
-    function ns.RestorePosition()
-        if ui and ui.root then
-            local p = self.db.profile.point
-            ui.root:ClearAllPoints()
-            ui.root:SetPoint(p[1], p[2], p[3], p[4], p[5])
-        end
-    end
-    
-    function ns.UpdateLockState()
-        if ui and ui.root then
-            ui.root:EnableMouse(not self.db.profile.locked)
-        end
-    end
-    
-    function ns.UpdateScaleAlpha()
-        if ui and ui.root then
-            ui.root:SetScale(self.db.profile.scale or 1.0)
-            ui.root:SetAlpha(self.db.profile.alpha or 1.0)
-        end
-    end
-    
-    function ns.UpdateAllBars()
-        if not ui then return end
-        
-        local db = self.db.profile
-        local tex = db.barTexture or "Interface\\TargetingFrame\\UI-StatusBar"
-        local font = db.fontFace or "GameFontHighlightSmall"
-        
-        for _, bar in pairs({ui.mh, ui.oh, ui.rg}) do
-            if bar then
-                bar:SetStatusBarTexture(tex)
-                if bar.text then
-                    bar.text:SetFontObject(font)
-                end
-                if not db.showTimeText then
-                    bar.text:Hide()
-                end
-                if not db.showSparkEffect then
-                    bar.spark:Hide()
-                end
+    local w = db.width or 260
+    local h = db.height or 14
+    local gap = math.max(4, math.floor(h * 0.5))
+
+    root:SetSize(w, h*3 + gap*2)
+
+    local function sizeBar(b)
+        if b then
+            b:SetWidth(w)
+            b:SetHeight(h)
+            if b.spark then
+                b.spark:SetHeight(h + 6)
             end
         end
     end
-    
-    function ns.UpdateVisibility()
-        if not ui then return end
-        
-        local db = self.db.profile
-        local show = db.showOutOfCombat or state.inCombat or state.autoRepeat
-        
-        if ui.root.SetShown then
-            ui.root:SetShown(show)
-            ui.mh:SetShown(db.showMelee)
-            ui.oh:SetShown(db.showOffhand and state.hasOH)
-            ui.rg:SetShown(db.showRanged)
-        else
-            -- Fallback for older clients
-            if show then ui.root:Show() else ui.root:Hide() end
-            if db.showMelee then ui.mh:Show() else ui.mh:Hide() end
-            if db.showOffhand and state.hasOH then ui.oh:Show() else ui.oh:Hide() end
-            if db.showRanged then ui.rg:Show() else ui.rg:Hide() end
-        end
+    sizeBar(mhBar); sizeBar(ohBar); sizeBar(rgBar)
+
+    if mhBar then
+        mhBar:ClearAllPoints()
+        mhBar:SetPoint("TOP", root, "TOP")
     end
-    
-    function ns.ApplyDimensions()
-        if ui and ui.root and ns.LayoutBars then
-            ns.LayoutBars()
-        end
+    if ohBar then
+        ohBar:ClearAllPoints()
+        ohBar:SetPoint("TOP", mhBar, "BOTTOM", 0, -gap)
+    end
+    if rgBar then
+        rgBar:ClearAllPoints()
+        rgBar:SetPoint("TOP", ohBar, "BOTTOM", 0, -gap)
     end
 end
 
--- Event handlers
-function SwingTimer:OnInventoryChanged(event, unit)
-    if unit == "player" then
-        self:UpdateWeaponInfo()
-    end
+-- Store reference to LayoutBars for namespace access
+ns.LayoutBars = LayoutBars
+
+-- Formatting and updates
+local function fmtTime(t)
+    if t <= 0 then return "0.00s" end
+    if t >= 10 then return string.format("%.1fs", t) end
+    return string.format("%.2fs", t)
 end
 
-function SwingTimer:PLAYER_REGEN_DISABLED()
-    state.inCombat = true
-    self:UpdateVisibility()
-end
-
-function SwingTimer:PLAYER_REGEN_ENABLED()
-    state.inCombat = false
-    self:UpdateVisibility()
-end
-
-function SwingTimer:START_AUTOREPEAT_SPELL()
-    state.autoRepeat = true
-    self:ResetBars()
-    self:UpdateVisibility()
-end
-
-function SwingTimer:STOP_AUTOREPEAT_SPELL()
-    state.autoRepeat = false
-    self:UpdateVisibility()
-end
-
-function SwingTimer:COMBAT_LOG_EVENT_UNFILTERED()
-    local timestamp, eventType, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags, 
-          destGUID, destName, destFlags, destRaidFlags = CombatLogGetCurrentEventInfo()
+local function UpdateVisual(bar, remain, duration)
+    if not bar then return end
     
-    if sourceGUID ~= playerGUID then return end
-    
-    if eventType == "SWING_DAMAGE" or eventType == "SWING_MISSED" then
-        local now = GetTime()
-        local hand = self:GetSwingHand(true, state.hasOH)
-        
-        if hand == "MH" then
-            state.mhNext = now + (state.mhSpeed or CONSTANTS.DEFAULT_MH_SPEED)
-            state.lastHand = "MH"
-        elseif hand == "OH" and state.hasOH then
-            state.ohNext = now + (state.ohSpeed or CONSTANTS.DEFAULT_OH_SPEED)
-            state.lastHand = "OH"
-        end
-    elseif eventType == "SPELL_CAST_SUCCESS" then
-        local spellId = select(12, CombatLogGetCurrentEventInfo())
-        if spellId == CONSTANTS.AUTO_SHOT_SPELL_ID and state.autoRepeat then
-            state.rangedNext = GetTime() + (state.rangedSpeed or CONSTANTS.DEFAULT_RANGED_SPEED)
-        end
-    end
-end
+    remain = math.max(0, remain or 0)
+    duration = math.max(0.001, duration or 1)
+    local pct = 1 - (remain / duration)
+    bar:SetValue(pct)
 
-function SwingTimer:UpdateWeaponInfo()
-    local function GetAttackSpeed(unit)
-        local mh, oh = UnitAttackSpeed(unit)
-        return mh, oh
-    end
-    
-    local mh, oh = GetAttackSpeed("player")
-    state.mhSpeed = mh or CONSTANTS.DEFAULT_MH_SPEED
-    state.ohSpeed = oh
-    state.hasOH = (oh ~= nil)
-
-    local _,_,rs = UnitRangedDamage("player")
-    state.rangedSpeed = (rs and rs > 0) and rs or CONSTANTS.DEFAULT_RANGED_SPEED
-end
-
-function SwingTimer:ResetBars(now)
-    now = now or GetTime()
-    state.mhNext = now + (state.mhSpeed or CONSTANTS.DEFAULT_MH_SPEED)
-    if state.hasOH and state.ohSpeed then
-        state.ohNext = now + (state.ohSpeed * CONSTANTS.OH_STAGGER_MULTIPLIER)
+    if db and db.showTimeText then
+        bar.text:SetText(fmtTime(remain))
+        bar.text:Show()
     else
-        state.ohNext = 0
+        bar.text:Hide()
     end
-    if state.autoRepeat then
-        state.rangedNext = now + (state.rangedSpeed or CONSTANTS.DEFAULT_RANGED_SPEED)
-    end
-end
 
-function SwingTimer:GetSwingHand(hasMainHand, hasOffHand)
-    if not hasOffHand then
-        return "MH"
-    end
-    return state.lastHand == "MH" and "OH" or "MH"
-end
-
--- UI Interface methods (now properly implemented)
-function SwingTimer:RefreshConfig()
-    ns.RefreshConfig()
-    self:UpdateAllBars()
-    self:UpdateVisibility()
-    self:UpdateScaleAlpha()
-    self:ApplyDimensions()
-end
-
-function SwingTimer:RestorePosition()
-    ns.RestorePosition()
-end
-
-function SwingTimer:UpdateLockState()
-    ns.UpdateLockState()
-end
-
-function SwingTimer:UpdateScaleAlpha()
-    ns.UpdateScaleAlpha()
-end
-
-function SwingTimer:UpdateAllBars()
-    ns.UpdateAllBars()
-end
-
-function SwingTimer:UpdateVisibility()
-    ns.UpdateVisibility()
-end
-
-function SwingTimer:ApplyDimensions()
-    ns.ApplyDimensions()
-end
-
--- Slash command handler
-function SwingTimer:SlashCommand(input)
-    input = (input or ""):lower()
-    local a, b = input:match("^(%S+)%s*(.-)$")
-    local db = self.db.profile
-
-    if a == "lock" then
-        db.locked = true
-        self:UpdateLockState()
-        self:Print("TacoRotSwingTimer locked.")
-    elseif a == "unlock" then
-        db.locked = false
-        self:UpdateLockState()
-        self:Print("TacoRotSwingTimer unlocked. Drag to move.")
-    elseif a == "reset" then
-        db.point = {"CENTER", UIParent, "CENTER", 0, -170}
-        self:RestorePosition()
-        self:Print("Position reset.")
-    elseif a == "scale" then
-        local newScale = tonumber(b)
-        if newScale and newScale >= CONSTANTS.MIN_SCALE and newScale <= CONSTANTS.MAX_SCALE then
-            db.scale = newScale
-            self:UpdateScaleAlpha()
-            self:Print("Scale set to " .. newScale)
+    local w = bar:GetWidth()
+    if db and db.showSparkEffect then
+        bar.spark:ClearAllPoints()
+        bar.spark:SetPoint("CENTER", bar, "LEFT", w * pct, 0)
+        if remain > 0 and remain < duration then
+            bar.spark:Show()
         else
-            self:Print("Scale must be between " .. CONSTANTS.MIN_SCALE .. " and " .. CONSTANTS.MAX_SCALE)
-        end
-    elseif a == "alpha" then
-        local newAlpha = tonumber(b)
-        if newAlpha and newAlpha >= CONSTANTS.MIN_ALPHA and newAlpha <= CONSTANTS.MAX_ALPHA then
-            db.alpha = newAlpha
-            self:UpdateScaleAlpha()
-            self:Print("Alpha set to " .. newAlpha)
-        else
-            self:Print("Alpha must be between " .. CONSTANTS.MIN_ALPHA .. " and " .. CONSTANTS.MAX_ALPHA)
-        end
-    elseif a == "show" then
-        if b == "ooc" then
-            db.showOutOfCombat = not db.showOutOfCombat
-            self:UpdateVisibility()
-            self:Print("Show out of combat: " .. tostring(db.showOutOfCombat))
-        else
-            self:Print("Usage: show ooc")
+            bar.spark:Hide()
         end
     else
-        self:Print("TacoRotSwingTimer v1.0.0 Commands:")
-        self:Print("/st lock/unlock - Lock or unlock the frame")
-        self:Print("/st reset - Reset position to center")
-        self:Print("/st scale X - Set scale (0.5-3.0)")
-        self:Print("/st alpha X - Set transparency (0.2-1.0)")
-        self:Print("/st show ooc - Toggle show out of combat")
+        bar.spark:Hide()
     end
+end
+
+-- OnUpdate script function
+local lastUpdate = 0
+local function OnUpdateHandler(self, elapsed)
+    if not db or not state then return end
+
+    lastUpdate = lastUpdate + elapsed
+    local rate = db.updateRate or 0.05
+    if lastUpdate < rate then return end
+    lastUpdate = 0
+
+    if not self:IsVisible() then return end
+
+    local now = GetTime()
+    if db.showMelee and mhBar then
+        UpdateVisual(mhBar, (state.mhNext or 0) - now, state.mhSpeed or C.DEFAULT_MH_SPEED)
+    end
+    if db.showOffhand and state.hasOH and state.ohSpeed and ohBar then
+        UpdateVisual(ohBar, (state.ohNext or 0) - now, state.ohSpeed or C.DEFAULT_OH_SPEED)
+    end
+    if db.showRanged and state.autoRepeat and rgBar then
+        UpdateVisual(rgBar, (state.rangedNext or 0) - now, state.rangedSpeed or C.DEFAULT_RANGED_SPEED)
+    end
+end
+
+-- MAIN UI CREATION FUNCTION - Called by core.lua after Ace3 is ready
+function ns.CreateUI()
+    -- Don't create twice
+    if root then return { root=root, mh=mhBar, oh=ohBar, rg=rgBar } end
+    
+    -- Create root anchor (movable)
+    root = CreateFrame("Frame", ADDON_NAME.."Anchor", UIParent)
+    root:SetMovable(true)
+    root:EnableMouse(true)
+    root:RegisterForDrag("LeftButton")
+    root:SetScript("OnDragStart", function(self) 
+        if db and not db.locked then 
+            self:StartMoving() 
+        end 
+    end)
+    root:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        if db and SwingTimer then
+            local a, p, r, x, y = self:GetPoint()
+            db.point = { a, p, r, x, y }
+        end
+    end)
+    
+    -- Set OnUpdate handler
+    root:SetScript("OnUpdate", OnUpdateHandler)
+
+    -- Create bars
+    mhBar = NewBar(ADDON_NAME.."MH", root, 0.2, 0.7, 1.0)
+    ohBar = NewBar(ADDON_NAME.."OH", root, 0.6, 0.4, 1.0)
+    rgBar = NewBar(ADDON_NAME.."RG", root, 1.0, 0.7, 0.2)
+
+    -- Set labels
+    if mhBar then mhBar.label:SetText("Main-hand") end
+    if ohBar then ohBar.label:SetText("Off-hand") end
+    if rgBar then rgBar.label:SetText("Ranged") end
+
+    -- Initially hide the frame - visibility will be controlled by core
+    root:Hide()
+
+    return { root=root, mh=mhBar, oh=ohBar, rg=rgBar }
+end
+
+-- Configuration refresh - gets latest db and state references
+function ns.RefreshConfig()
+    if ns.GetConfig and ns.GetState then
+        db = ns.GetConfig()
+        state = ns.GetState()
+    end
+end
+
+-- Position restore
+function ns.RestorePosition()
+    if not root or not db then return end
+    local p = db.point
+    if p and #p >= 5 then
+        root:ClearAllPoints()
+        root:SetPoint(p[1], p[2], p[3], p[4], p[5])
+    end
+end
+
+-- Lock state update
+function ns.UpdateLockState()
+    if not root or not db then return end
+    root:EnableMouse(not db.locked)
+end
+
+-- Scale and alpha update
+function ns.UpdateScaleAlpha()
+    if not root or not db then return end
+    root:SetScale(db.scale or 1.0)
+    root:SetAlpha(db.alpha or 1.0)
+end
+
+-- Update all bar properties
+function ns.UpdateAllBars()
+    if not db then return end
+    
+    -- Set labels
+    if mhBar and mhBar.label then mhBar.label:SetText("Main-hand") end
+    if ohBar and ohBar.label then ohBar.label:SetText("Off-hand") end
+    if rgBar and rgBar.label then rgBar.label:SetText("Ranged") end
+
+    local tex = db.barTexture or "Interface\\TargetingFrame\\UI-StatusBar"
+    local font = db.fontFace or "GameFontHighlightSmall"
+    
+    for _, bar in pairs({mhBar, ohBar, rgBar}) do
+        if bar then
+            bar:SetStatusBarTexture(tex)
+            if bar.text then
+                bar.text:SetFontObject(font)
+            end
+            if not db.showTimeText then
+                bar.text:Hide()
+            end
+            if not db.showSparkEffect then
+                bar.spark:Hide()
+            end
+        end
+    end
+end
+
+-- Visibility update
+function ns.UpdateVisibility()
+    if not db or not state or not root then return end
+
+    local show = db.showOutOfCombat or state.inCombat or state.autoRepeat
+    SafeSetShown(root, show)
+    
+    if mhBar then SafeSetShown(mhBar, db.showMelee) end
+    if ohBar then SafeSetShown(ohBar, db.showOffhand and state.hasOH) end
+    if rgBar then SafeSetShown(rgBar, db.showRanged) end
+end
+
+-- Apply dimensions
+function ns.ApplyDimensions()
+    LayoutBars()
 end
