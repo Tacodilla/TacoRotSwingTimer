@@ -1,16 +1,43 @@
--- ui.lua - Fixed for Ace3 Integration
-local ADDON_NAME = "TacoRotSwingTimer"
-local ns = _G[ADDON_NAME]
-local compat = ns and ns.compat or {}
-local SwingTimer = ns and ns.SwingTimer
+-- ui.lua - TacoRotSwingTimer (3.3.5a)
+-- Builds the three swing bars and exposes a small UI API to core.lua.
 
--- Variables that will be initialized when UI is created
-local db, state
-local root, mhBar, ohBar, rgBar
+local ADDON_NAME = "TacoRotSwingTimer"
+local ns = _G[ADDON_NAME] or {}          -- be defensive in case core hiccups
+_G[ADDON_NAME] = ns
+
+-- ----- Compat guard (in case Compat-335.lua didn't run) --------------------
+ns.compat = ns.compat or {}
+local compat = ns.compat
+
+if not compat.ApplyBackdrop then
+    function compat.ApplyBackdrop(frame, alpha)
+        if not frame or not frame.SetBackdrop then return end
+        frame:SetBackdrop({
+            bgFile   = "Interface\\ChatFrame\\ChatFrameBackground",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile     = true, tileSize = 16, edgeSize = 12,
+            insets   = { left = 2, right = 2, top = 2, bottom = 2 },
+        })
+        frame:SetBackdropColor(0, 0, 0, alpha or 0.7)
+    end
+end
+
+if not compat.SetTexColor then
+    function compat.SetTexColor(tex, r, g, b, a)
+        if tex and tex.SetTexture then tex:SetTexture(r or 0, g or 0, b or 0, a or 1) end
+    end
+end
+-- --------------------------------------------------------------------------
+
 local C = ns.CONSTANTS or {}
 
--- Handle Frame:SetShown absence on older clients
+-- These are initialized when UI is created
+local db, state
+local root, mhBar, ohBar, rgBar
+
+-- 3.3.5 fallback for :SetShown
 local function SafeSetShown(frame, show)
+    if not frame then return end
     if frame.SetShown then
         frame:SetShown(show)
     else
@@ -18,7 +45,7 @@ local function SafeSetShown(frame, show)
     end
 end
 
--- Build one WST-style status bar
+-- Build one status bar
 local function NewBar(name, parent, r, g, b)
     local bar = CreateFrame("StatusBar", name, parent)
     bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
@@ -49,25 +76,23 @@ local function NewBar(name, parent, r, g, b)
     return bar
 end
 
--- Layout helper respecting config width/height
+-- Layout helper respecting db width/height
 local function LayoutBars()
     if not db or not root then return end
-    
+
     local w = db.width or 260
     local h = db.height or 14
     local gap = math.max(4, math.floor(h * 0.5))
 
-    root:SetSize(w, h*3 + gap*2)
+    root:SetSize(w, h * 3 + gap * 2)
 
     local function sizeBar(b)
-        if b then
-            b:SetWidth(w)
-            b:SetHeight(h)
-            if b.spark then
-                b.spark:SetHeight(h + 6)
-            end
-        end
+        if not b then return end
+        b:SetWidth(w)
+        b:SetHeight(h)
+        if b.spark then b.spark:SetHeight(h + 6) end
     end
+
     sizeBar(mhBar); sizeBar(ohBar); sizeBar(rgBar)
 
     if mhBar then
@@ -84,10 +109,10 @@ local function LayoutBars()
     end
 end
 
--- Store reference to LayoutBars for namespace access
+-- Expose to namespace so core can call ns.ApplyDimensions()
 ns.LayoutBars = LayoutBars
 
--- Formatting and updates
+-- Formatting + visual updates
 local function fmtTime(t)
     if t <= 0 then return "0.00s" end
     if t >= 10 then return string.format("%.1fs", t) end
@@ -96,10 +121,10 @@ end
 
 local function UpdateVisual(bar, remain, duration)
     if not bar then return end
-    
-    remain = math.max(0, remain or 0)
+    remain   = math.max(0, remain or 0)
     duration = math.max(0.001, duration or 1)
     local pct = 1 - (remain / duration)
+
     bar:SetValue(pct)
 
     if db and db.showTimeText then
@@ -109,8 +134,8 @@ local function UpdateVisual(bar, remain, duration)
         bar.text:Hide()
     end
 
-    local w = bar:GetWidth()
     if db and db.showSparkEffect then
+        local w = bar:GetWidth()
         bar.spark:ClearAllPoints()
         bar.spark:SetPoint("CENTER", bar, "LEFT", w * pct, 0)
         if remain > 0 and remain < duration then
@@ -123,7 +148,7 @@ local function UpdateVisual(bar, remain, duration)
     end
 end
 
--- OnUpdate script function
+-- OnUpdate driving the three bars
 local lastUpdate = 0
 local function OnUpdateHandler(self, elapsed)
     if not db or not state then return end
@@ -147,49 +172,44 @@ local function OnUpdateHandler(self, elapsed)
     end
 end
 
--- MAIN UI CREATION FUNCTION - Called by core.lua after Ace3 is ready
+-- ===== Public UI API used by core.lua =====================================
+
 function ns.CreateUI()
-    -- Don't create twice
-    if root then return { root=root, mh=mhBar, oh=ohBar, rg=rgBar } end
-    
-    -- Create root anchor (movable)
-    root = CreateFrame("Frame", ADDON_NAME.."Anchor", UIParent)
+    if root then
+        return { root = root, mh = mhBar, oh = ohBar, rg = rgBar }
+    end
+
+    -- Movable root
+    root = CreateFrame("Frame", ADDON_NAME .. "Anchor", UIParent)
     root:SetMovable(true)
     root:EnableMouse(true)
     root:RegisterForDrag("LeftButton")
-    root:SetScript("OnDragStart", function(self) 
-        if db and not db.locked then 
-            self:StartMoving() 
-        end 
-    end)
-    root:SetScript("OnDragStop", function(self)
-        self:StopMovingOrSizing()
-        if db and SwingTimer then
-            local a, p, r, x, y = self:GetPoint()
+    root:SetScript("OnDragStart", function(f) if db and not db.locked then f:StartMoving() end end)
+    root:SetScript("OnDragStop", function(f)
+        f:StopMovingOrSizing()
+        if db then
+            local a, p, r, x, y = f:GetPoint()
             db.point = { a, p, r, x, y }
         end
     end)
-    
-    -- Set OnUpdate handler
+
     root:SetScript("OnUpdate", OnUpdateHandler)
 
-    -- Create bars
-    mhBar = NewBar(ADDON_NAME.."MH", root, 0.2, 0.7, 1.0)
-    ohBar = NewBar(ADDON_NAME.."OH", root, 0.6, 0.4, 1.0)
-    rgBar = NewBar(ADDON_NAME.."RG", root, 1.0, 0.7, 0.2)
+    -- Bars
+    mhBar = NewBar(ADDON_NAME .. "MH", root, 0.2, 0.7, 1.0)
+    ohBar = NewBar(ADDON_NAME .. "OH", root, 0.6, 0.4, 1.0)
+    rgBar = NewBar(ADDON_NAME .. "RG", root, 1.0, 0.7, 0.2)
 
-    -- Set labels
-    if mhBar then mhBar.label:SetText("Main-hand") end
-    if ohBar then ohBar.label:SetText("Off-hand") end
-    if rgBar then rgBar.label:SetText("Ranged") end
+    if mhBar and mhBar.label then mhBar.label:SetText("Main-hand") end
+    if ohBar and ohBar.label then ohBar.label:SetText("Off-hand") end
+    if rgBar and rgBar.label then rgBar.label:SetText("Ranged") end
 
-    -- Initially hide the frame - visibility will be controlled by core
+    -- Start hidden; core controls visibility based on settings/state
     root:Hide()
 
-    return { root=root, mh=mhBar, oh=ohBar, rg=rgBar }
+    return { root = root, mh = mhBar, oh = ohBar, rg = rgBar }
 end
 
--- Configuration refresh - gets latest db and state references
 function ns.RefreshConfig()
     if ns.GetConfig and ns.GetState then
         db = ns.GetConfig()
@@ -197,7 +217,6 @@ function ns.RefreshConfig()
     end
 end
 
--- Position restore
 function ns.RestorePosition()
     if not root or not db then return end
     local p = db.point
@@ -207,60 +226,46 @@ function ns.RestorePosition()
     end
 end
 
--- Lock state update
 function ns.UpdateLockState()
-    if not root or not db then return end
-    root:EnableMouse(not db.locked)
+    if root and db then root:EnableMouse(not db.locked) end
 end
 
--- Scale and alpha update
 function ns.UpdateScaleAlpha()
     if not root or not db then return end
     root:SetScale(db.scale or 1.0)
     root:SetAlpha(db.alpha or 1.0)
 end
 
--- Update all bar properties
 function ns.UpdateAllBars()
     if not db then return end
-    
-    -- Set labels
+
     if mhBar and mhBar.label then mhBar.label:SetText("Main-hand") end
     if ohBar and ohBar.label then ohBar.label:SetText("Off-hand") end
     if rgBar and rgBar.label then rgBar.label:SetText("Ranged") end
 
-    local tex = db.barTexture or "Interface\\TargetingFrame\\UI-StatusBar"
-    local font = db.fontFace or "GameFontHighlightSmall"
-    
-    for _, bar in pairs({mhBar, ohBar, rgBar}) do
+    local tex  = db.barTexture or "Interface\\TargetingFrame\\UI-StatusBar"
+    local font = db.fontFace   or "GameFontHighlightSmall"
+
+    for _, bar in pairs({ mhBar, ohBar, rgBar }) do
         if bar then
             bar:SetStatusBarTexture(tex)
-            if bar.text then
-                bar.text:SetFontObject(font)
-            end
-            if not db.showTimeText then
-                bar.text:Hide()
-            end
-            if not db.showSparkEffect then
-                bar.spark:Hide()
-            end
+            if bar.text then bar.text:SetFontObject(font) end
+            if not db.showTimeText then bar.text:Hide() end
+            if not db.showSparkEffect then bar.spark:Hide() end
         end
     end
 end
 
--- Visibility update
 function ns.UpdateVisibility()
     if not db or not state or not root then return end
-
     local show = db.showOutOfCombat or state.inCombat or state.autoRepeat
+
     SafeSetShown(root, show)
-    
     if mhBar then SafeSetShown(mhBar, db.showMelee) end
     if ohBar then SafeSetShown(ohBar, db.showOffhand and state.hasOH) end
     if rgBar then SafeSetShown(rgBar, db.showRanged) end
 end
 
--- Apply dimensions
 function ns.ApplyDimensions()
     LayoutBars()
 end
