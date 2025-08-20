@@ -4,8 +4,4 @@
 ## Author: Steven
 ## Version: 1.0.0
 ## SavedVariables: SwingTimerDB
-
-Compat-335.lua
-core.lua
-ui.lua
 SwingTimer.xml
