@@ -3,6 +3,15 @@ local ADDON, ns = ...
 local compat = ns and ns.compat or {}
 local db, state
 
+-- Handle `Frame:SetShown` absence on older clients
+local function SafeSetShown(frame, show)
+    if frame.SetShown then
+        frame:SetShown(show)
+    else
+        if show then frame:Show() else frame:Hide() end
+    end
+end
+
 -- Build one WST-style status bar
 local function NewBar(name, parent, r, g, b)
     local bar = CreateFrame("StatusBar", name, parent)
@@ -143,10 +152,10 @@ end
 
 function ns.UpdateVisibility()
     local show = db.showOutOfCombat or state.inCombat or state.autoRepeat
-    root:SetShown(show)
-    mhBar:SetShown(db.showMelee)
-    ohBar:SetShown(db.showOffhand and state.hasOH)
-    rgBar:SetShown(db.showRanged)
+    SafeSetShown(root, show)
+    SafeSetShown(mhBar, db.showMelee)
+    SafeSetShown(ohBar, db.showOffhand and state.hasOH)
+    SafeSetShown(rgBar, db.showRanged)
 end
 
 function ns.ApplyDimensions()
