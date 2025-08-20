@@ -13,15 +13,6 @@ local function SafeSetShown(frame, show)
     end
 end
 
--- Handle `Frame:SetShown` absence on older clients
-local function SafeSetShown(frame, show)
-    if frame.SetShown then
-        frame:SetShown(show)
-    else
-        if show then frame:Show() else frame:Hide() end
-    end
-end
-
 -- Build one WST-style status bar
 local function NewBar(name, parent, r, g, b)
     local bar = CreateFrame("StatusBar", name, parent)
