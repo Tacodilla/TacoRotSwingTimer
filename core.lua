@@ -16,7 +16,16 @@ local C = {
   DEF_MH = 2.0, DEF_OH = 1.5, DEF_R = 2.0,
 }
 
--- runtime state (persisted via AceDB)
+-- Hunter melee specials that should RESET MH swing when they land.
+-- Raptor Strike (all ranks through WotLK) + Mongoose Bite ranks.
+local MELEE_ONHIT_SPELL = {
+  -- Raptor Strike
+  [2973]=true,[14260]=true,[14261]=true,[14262]=true,[14263]=true,[14264]=true,[14265]=true,[14266]=true,[27014]=true,[48995]=true,[48996]=true,
+  -- Mongoose Bite
+  [1495]=true,[14269]=true,[14270]=true,[14271]=true,[36916]=true,
+}
+
+-- runtime state
 local state = {
   mhSpeed=2.0, ohSpeed=1.5, rangedSpeed=2.0,
   mhNext=0, ohNext=0, rangedNext=0,
@@ -51,20 +60,19 @@ local function UpdateSpeeds()
     local rs = UnitRangedAttackSpeed("player")
     if rs and rs>0 then state.rangedSpeed = rs end
   end
-  -- if speed changes mid-swing, recompute next by anchoring to last swing start
+  -- re-anchor nexts off the last known swing moment so changes snap correctly
   if state.mhLast then state.mhNext = state.mhLast + (state.mhSpeed or C.DEF_MH) end
   if state.ohLast then state.ohNext = state.ohLast + (state.ohSpeed or C.DEF_OH) end
   if state.rangedLast then state.rangedNext = state.rangedLast + (state.rangedSpeed or C.DEF_R) end
 end
 
--- local mapping of CLEU timestamp -> GetTime() space
+-- map CLEU server timestamp -> local GetTime() space (smoothed)
 local function localEventTime(cleuTS)
   local now = GetTime()
   local estOffset = now - cleuTS
   if not state.timeOffset then
     state.timeOffset = estOffset
   else
-    -- gentle EMA to avoid jumps
     state.timeOffset = state.timeOffset * 0.98 + estOffset * 0.02
   end
   return cleuTS + state.timeOffset
@@ -108,8 +116,20 @@ end
 -- combat state
 function SwingTimer:PLAYER_REGEN_DISABLED() state.inCombat = true; ToggleTick(self, true); ns.UpdateVisibility() end
 function SwingTimer:PLAYER_REGEN_ENABLED()  state.inCombat = false; ToggleTick(self, false); ns.UpdateVisibility() end
-function SwingTimer:PLAYER_ENTER_COMBAT()   state.isMeleeAuto = true end
-function SwingTimer:PLAYER_LEAVE_COMBAT()   state.isMeleeAuto = false end
+
+function SwingTimer:PLAYER_ENTER_COMBAT()
+  state.isMeleeAuto = true
+  -- when swapping to melee, refresh speeds and seed an immediate MH cycle
+  UpdateSpeeds()
+  local now = GetTime()
+  state.mhLast = now
+  state.mhNext = now + (state.mhSpeed or C.DEF_MH)
+end
+
+function SwingTimer:PLAYER_LEAVE_COMBAT()
+  state.isMeleeAuto = false
+end
+
 function SwingTimer:START_AUTOREPEAT_SPELL() state.autoRepeat = true end
 function SwingTimer:STOP_AUTOREPEAT_SPELL()  state.autoRepeat = false end
 function SwingTimer:UNIT_ATTACK_SPEED() UpdateSpeeds() end
@@ -119,7 +139,7 @@ function SwingTimer:ACTIVE_TALENT_GROUP_CHANGED() UpdateSpeeds() end
 -- helpers
 local function clampPeriod(base, observed)
   if not base or base <= 0 then base = 2.0 end
-  local minP = base * 0.40  -- parry-haste can shorten a lot
+  local minP = base * 0.40
   local maxP = base * 1.60
   if not observed or observed <= 0 then return base end
   if observed < minP then return minP end
@@ -130,7 +150,7 @@ end
 local function assignHand(t)
   if not state.hasOH then return "MH" end
   local dn = math.huge
-  local hand = state.lastHand == "MH" and "OH" or "MH"  -- fallback toggle
+  local hand = state.lastHand == "MH" and "OH" or "MH"
   if state.mhNext then
     local d = math.abs(t - state.mhNext); if d < dn then dn = d; hand = "MH" end
   end
@@ -146,6 +166,7 @@ local function OnCLEU(timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID,
   if srcGUID ~= playerGUID then return end
   local t = localEventTime(timestamp)
 
+  -- --- MELEE AUTOS ---
   if eventType == "SWING_DAMAGE" or eventType == "SWING_MISSED" then
     local hand = assignHand(t)
     if hand == "MH" then
@@ -163,21 +184,42 @@ local function OnCLEU(timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID,
       state.ohNext = t + period
       state.lastHand = "OH"
     end
+    return
+  end
 
-  elseif eventType == "RANGE_DAMAGE" or eventType == "RANGE_MISSED" then
+  -- --- RANGED AUTOS ---
+  if eventType == "RANGE_DAMAGE" or eventType == "RANGE_MISSED" then
     local base = state.rangedSpeed or C.DEF_R
     local observed = state.rangedLast and (t - state.rangedLast) or base
     local period = clampPeriod(base, observed)
     state.rangedLast = t
     state.rangedNext = t + period
+    return
+  end
 
-  elseif eventType == "SPELL_CAST_SUCCESS" then
-    -- Some servers emit Auto Shot success; harmless to set here too.
+  -- --- SPECIALS THAT CONSUME / REPLACE MH SWING (e.g., Raptor Strike) ---
+  if eventType == "SPELL_DAMAGE" or eventType == "SPELL_MISSED" then
+    local spellId = ...
+    if MELEE_ONHIT_SPELL[spellId] then
+      -- make sure we’re using current weapon speed
+      UpdateSpeeds()
+      local base = state.mhSpeed or C.DEF_MH
+      local observed = state.mhLast and (t - state.mhLast) or base
+      local period = clampPeriod(base, observed)
+      state.mhLast = t
+      state.mhNext = t + period
+      state.lastHand = "MH"
+      return
+    end
+  end
+
+  if eventType == "SPELL_CAST_SUCCESS" then
     local spellId = ...
     if spellId == C.AUTO_SHOT and state.autoRepeat then
       local base = state.rangedSpeed or C.DEF_R
       state.rangedLast = t
       state.rangedNext = t + base
+      return
     end
   end
 end
