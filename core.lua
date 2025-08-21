@@ -23,7 +23,14 @@ local MELEE_ONHIT_SPELL = {
   [2973]=true,[14260]=true,[14261]=true,[14262]=true,[14263]=true,[14264]=true,[14265]=true,[14266]=true,[27014]=true,[48995]=true,[48996]=true,
   -- Mongoose Bite
   [1495]=true,[14269]=true,[14270]=true,[14271]=true,[36916]=true,
+
+  -- Rogue: Sinister Strike (all WotLK ranks)
+  [1752]=true,[1757]=true,[1758]=true,[1759]=true,[1760]=true,      -- early ranks
+  [8621]=true,[11293]=true,[11294]=true,                            -- mid ranks
+  [26861]=true,[26862]=true,                                        -- TBC
+  [48637]=true,[48638]=true,                                        -- WotLK
 }
+
 
 -- runtime state
 local state = {
