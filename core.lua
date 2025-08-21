@@ -28,15 +28,6 @@ local MELEE_ONHIT_SPELL = {
 
   -- Druid (Bear): Maul (all ranks)
   [6807]=true,[6808]=true,[6809]=true,[8972]=true,[9745]=true,[9880]=true,[9881]=true,[26996]=true,[48479]=true,[48480]=true,
-
-  -- Warrior: Heroic Strike (all ranks)
-  [78]=true,[284]=true,[285]=true,[1608]=true,[11564]=true,[11565]=true,[11566]=true,[11567]=true,[25286]=true,[29707]=true,[30324]=true,[47449]=true,[47450]=true,
-
-  -- Warrior: Cleave (all ranks)
-  [845]=true,[7369]=true,[11608]=true,[11609]=true,[20569]=true,[25231]=true,[47519]=true,[47520]=true,
-
-  -- Rogue: Sinister Strike (many servers treat as yellow-only; include if your realm resets swing on SS)
-  [1752]=true,[1757]=true,[1758]=true,[1759]=true,[1760]=true,[8621]=true,[11293]=true,[11294]=true,[26861]=true,[26862]=true,[48637]=true,[48638]=true,
 }
 
 
