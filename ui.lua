@@ -12,9 +12,9 @@ local db, state
 local frames = {}  -- key -> {frame, bar, left, right, spark}
 
 local COLORS = {
-  mh = {0.90, 0.20, 0.20},
-  oh = {0.20, 0.55, 0.95},
-  rg = {0.95, 0.85, 0.20},
+  mh = {0.90, 0.20, 0.20}, -- red
+  oh = {0.20, 0.55, 0.95}, -- blue
+  rg = {0.95, 0.85, 0.20}, -- yellow
 }
 
 local function tex(frame)
@@ -74,8 +74,11 @@ end
 
 local function fmt(sec)
   if not sec or sec < 0 then return "" end
-  if sec >= 10 then return string.format("%.1f", sec)
-  else return string.format("%.2f", sec) end
+  if sec >= 10 then
+    return string.format("%.1f", sec)
+  else
+    return string.format("%.2f", sec)
+  end
 end
 
 function ns.BuildUI(cfg, st)
@@ -106,11 +109,11 @@ function ns.BuildUI(cfg, st)
     end)
   end
 
-  for k,o in pairs(frames) do place_one(k, o); end
+  for k,o in pairs(frames) do place_one(k, o) end
 end
 
 local function apply(o, now, nextAt, period)
-  if not o or not period or period<=0 then
+  if not o or not period or period <= 0 then
     if o then o.bar:SetValue(0); o.right:SetText(""); o.spark:Hide() end
     return
   end
@@ -146,19 +149,24 @@ function ns.UpdateBars(now, st)
     mh.left:SetText("MH")
     apply(mh, now, state.mhNext, mPer)
   end
-  if oh and state.hasOH then
+
+  -- OH: always label; animate only if an offhand exists
+  if oh then
     oh.left:SetText("OH")
-    apply(oh, now, state.ohNext, oPer)
-  elseif oh then
-    oh.bar:SetValue(0); oh.right:SetText(""); oh.spark:Hide()
+    if state.hasOH then
+      apply(oh, now, state.ohNext, oPer)
+    else
+      oh.bar:SetValue(0); oh.right:SetText("0.00"); oh.spark:Hide()
+    end
   end
+
   if rg then
     rg.left:SetText("Ranged")
     apply(rg, now, state.rangedNext, rPer)
   end
 end
 
--- Show/Hide version (3.3.5a compatible)
+-- 3.3.5a Show/Hide visibility
 function ns.UpdateVisibility()
   if not db then return end
   local inCombat = state and state.inCombat
@@ -174,10 +182,9 @@ function ns.UpdateVisibility()
     set_shown(frames.mh.frame, db.showMelee and (showOOC or inCombat))
   end
 
-  -- OH (requires actual offhand equipped unless you remove hasOH check)
+  -- OH (no hasOH gate so the frame can be positioned even without an offhand)
   if frames.oh then
-    local hasOH = state and state.hasOH
-    set_shown(frames.oh.frame, db.showOffhand and hasOH and (showOOC or inCombat))
+    set_shown(frames.oh.frame, db.showOffhand and (showOOC or inCombat))
   end
 
   -- Ranged
@@ -189,7 +196,7 @@ end
 function ns.ApplyDimensions()
   if not db then return end
   local w, h, s, a = db.width or 240, db.barHeight or 18, db.scale or 1, db.alpha or 1
-  for key,o in pairs(frames) do
+  for _,o in pairs(frames) do
     o.frame:SetScale(s); o.frame:SetAlpha(a)
     o.frame:SetWidth(w + 8); o.frame:SetHeight(h + 8)
     o.left:SetFont("Fonts\\FRIZQT__.TTF", db.fontSize or 12, "OUTLINE")
