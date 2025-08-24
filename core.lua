@@ -10,15 +10,17 @@ local SwingTimer = AceAddon:NewAddon(ADDON_NAME, "AceConsole-3.0", "AceEvent-3.0
 local ns = _G[ADDON_NAME] or {}
 _G[ADDON_NAME] = ns
 
+-- ---------------------------------------------------------------------------
+
 -- constants
 local C = {
-  AUTO_SHOT = 75,         -- spellID
+  AUTO_SHOT   = 75,    -- hunter auto
+  SHOOT_WAND  = 5019,  -- wand "Shoot" (often logs as SPELL_* on 3.3.5a cores)
   DEF_MH = 2.0, DEF_OH = 1.5, DEF_R = 2.0,
 }
 
--- Hunter melee specials that should RESET MH swing when they land.
--- Raptor Strike (all ranks through WotLK) + Mongoose Bite ranks.
--- Abilities that should reset the MH timer when they LAND (Wrath 3.3.5a).
+-- Abilities that behave as "on next swing" and should reset MH when they LAND.
+-- Death Knights intentionally omitted per your note.
 local MELEE_ONHIT_SPELL = {
   -- Hunter: Raptor Strike (all ranks)
   [2973]=true,[14260]=true,[14261]=true,[14262]=true,[14263]=true,[14264]=true,[14265]=true,[14266]=true,[27014]=true,[48995]=true,[48996]=true,
@@ -28,18 +30,23 @@ local MELEE_ONHIT_SPELL = {
 
   -- Druid (Bear): Maul (all ranks)
   [6807]=true,[6808]=true,[6809]=true,[8972]=true,[9745]=true,[9880]=true,[9881]=true,[26996]=true,[48479]=true,[48480]=true,
+
+  -- Warrior: Heroic Strike (all ranks)
+  [78]=true,[284]=true,[285]=true,[1608]=true,[11564]=true,[11565]=true,[11566]=true,[11567]=true,[25286]=true,[29707]=true,[30324]=true,[47449]=true,[47450]=true,
+
+  -- Warrior: Cleave (all ranks)
+  [845]=true,[7369]=true,[11608]=true,[11609]=true,[20569]=true,[25231]=true,[47519]=true,[47520]=true,
 }
 
-
-
--- runtime state
+-- runtime state (persisted via AceDB)
 local state = {
   mhSpeed=2.0, ohSpeed=1.5, rangedSpeed=2.0,
   mhNext=0, ohNext=0, rangedNext=0,
   mhLast=nil, ohLast=nil, rangedLast=nil,
   lastHand="MH",
   inCombat=false, isMeleeAuto=false, autoRepeat=false,
-  timeOffset=nil, -- GetTime() - CLEU timestamp (smoothed)
+  timeOffset=nil,    -- maps CLEU timestamp -> GetTime()
+  lastMeleeAt=nil,   -- dedupe window if a core logs HS/Cleave as SWING and SPELL
 }
 ns.GetState = function() return state end
 
@@ -50,6 +57,7 @@ local defaults = {
     locked=false, scale=1.0, alpha=1.0,
     width=240, barHeight=18, gap=6,
     posX=0, posY=120,
+
     showOutOfCombat=true,
     showMelee=true, showOffhand=true, showRanged=true,
     fontSize=12,
@@ -58,7 +66,9 @@ local defaults = {
 
 local function pr(self, msg) self:Print(msg) end
 
--- speeds
+-- ---------------------------------------------------------------------------
+-- Speeds & helpers
+
 local function UpdateSpeeds()
   local mh, oh = UnitAttackSpeed("player")
   if mh and mh>0 then state.mhSpeed = mh end
@@ -67,13 +77,13 @@ local function UpdateSpeeds()
     local rs = UnitRangedAttackSpeed("player")
     if rs and rs>0 then state.rangedSpeed = rs end
   end
-  -- re-anchor nexts off the last known swing moment so changes snap correctly
-  if state.mhLast then state.mhNext = state.mhLast + (state.mhSpeed or C.DEF_MH) end
-  if state.ohLast then state.ohNext = state.ohLast + (state.ohSpeed or C.DEF_OH) end
-  if state.rangedLast then state.rangedNext = state.rangedLast + (state.rangedSpeed or C.DEF_R) end
+  -- Re-anchor next swings to last observed event so changes snap immediately.
+  if state.mhLast     then state.mhNext     = state.mhLast     + (state.mhSpeed     or C.DEF_MH) end
+  if state.ohLast     then state.ohNext     = state.ohLast     + (state.ohSpeed     or C.DEF_OH) end
+  if state.rangedLast then state.rangedNext = state.rangedLast + (state.rangedSpeed or C.DEF_R)  end
 end
 
--- map CLEU server timestamp -> local GetTime() space (smoothed)
+-- Smooth map of CLEU server timestamps into local GetTime() space.
 local function localEventTime(cleuTS)
   local now = GetTime()
   local estOffset = now - cleuTS
@@ -85,65 +95,6 @@ local function localEventTime(cleuTS)
   return cleuTS + state.timeOffset
 end
 
-local playerGUID, tick
-local function RebuildUI(self) ns.BuildUI(self.db.profile, state); ns.ApplyDimensions(); ns.UpdateVisibility() end
-local function ToggleTick(self, on)
-  if tick then self:CancelTimer(tick); tick = nil end
-  -- UI's smooth driver handles animation; no periodic tick needed.
-end
-
--- --------------------------- WoW events ------------------------------------
-function SwingTimer:OnInitialize()
-  self.db = LibStub("AceDB-3.0"):New("SwingTimerDB", defaults, true)
-  self:RegisterChatCommand("st", "SlashCommand")
-  self:RegisterChatCommand("swingtimer", "SlashCommand")
-end
-
-function SwingTimer:OnEnable()
-  playerGUID = UnitGUID("player")
-  self:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-  self:RegisterEvent("PLAYER_REGEN_ENABLED")
-  self:RegisterEvent("PLAYER_REGEN_DISABLED")
-  self:RegisterEvent("PLAYER_ENTER_COMBAT")
-  self:RegisterEvent("PLAYER_LEAVE_COMBAT")
-  self:RegisterEvent("START_AUTOREPEAT_SPELL")
-  self:RegisterEvent("STOP_AUTOREPEAT_SPELL")
-  self:RegisterEvent("UNIT_ATTACK_SPEED")
-  self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
-  self:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
-
-  UpdateSpeeds(); RebuildUI(self)
-  if ns.SetUpdateRate and self.db and self.db.profile then ns.SetUpdateRate(self.db.profile.updateRate or (1/60)) end
-end
-
-function SwingTimer:OnDisable()
-  ToggleTick(self, false)
-end
-
--- combat state
-function SwingTimer:PLAYER_REGEN_DISABLED() state.inCombat = true; ToggleTick(self, true); ns.UpdateVisibility() end
-function SwingTimer:PLAYER_REGEN_ENABLED()  state.inCombat = false; ToggleTick(self, false); ns.UpdateVisibility() end
-
-function SwingTimer:PLAYER_ENTER_COMBAT()
-  state.isMeleeAuto = true
-  -- when swapping to melee, refresh speeds and seed an immediate MH cycle
-  UpdateSpeeds()
-  local now = GetTime()
-  state.mhLast = now
-  state.mhNext = now + (state.mhSpeed or C.DEF_MH)
-end
-
-function SwingTimer:PLAYER_LEAVE_COMBAT()
-  state.isMeleeAuto = false
-end
-
-function SwingTimer:START_AUTOREPEAT_SPELL() state.autoRepeat = true end
-function SwingTimer:STOP_AUTOREPEAT_SPELL()  state.autoRepeat = false end
-function SwingTimer:UNIT_ATTACK_SPEED() UpdateSpeeds() end
-function SwingTimer:PLAYER_EQUIPMENT_CHANGED() UpdateSpeeds() end
-function SwingTimer:ACTIVE_TALENT_GROUP_CHANGED() UpdateSpeeds() end
-
--- helpers
 local function clampPeriod(base, observed)
   if not base or base <= 0 then base = 2.0 end
   local minP = base * 0.40
@@ -167,13 +118,78 @@ local function assignHand(t)
   return hand
 end
 
--- --------------------------- Combat Log (Wrath 3.3.5a) ---------------------
--- Header order: timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, ...
+-- Small dedupe window to avoid double-reset if HS/Cleave log as both SWING & SPELL
+local function shouldSkipOnHit(t)
+  return state.lastMeleeAt and (t - state.lastMeleeAt) < 0.05
+end
+
+-- ---------------------------------------------------------------------------
+-- Addon lifecycle
+
+local playerGUID, tick
+local function RebuildUI(self) ns.BuildUI(self.db.profile, state); ns.ApplyDimensions(); ns.UpdateVisibility() end
+local function ToggleTick(self, on)
+  if tick then self:CancelTimer(tick); tick = nil end
+  -- UI's smooth per-frame driver handles animation; no periodic timer needed.
+end
+
+function SwingTimer:OnInitialize()
+  self.db = LibStub("AceDB-3.0"):New("SwingTimerDB", defaults, true)
+  self:RegisterChatCommand("st", "SlashCommand")
+  self:RegisterChatCommand("swingtimer", "SlashCommand")
+end
+
+function SwingTimer:OnEnable()
+  playerGUID = UnitGUID("player")
+  self:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+  self:RegisterEvent("PLAYER_REGEN_ENABLED")
+  self:RegisterEvent("PLAYER_REGEN_DISABLED")
+  self:RegisterEvent("PLAYER_ENTER_COMBAT")
+  self:RegisterEvent("PLAYER_LEAVE_COMBAT")
+  self:RegisterEvent("START_AUTOREPEAT_SPELL")
+  self:RegisterEvent("STOP_AUTOREPEAT_SPELL")
+  self:RegisterEvent("UNIT_ATTACK_SPEED")
+  self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+  self:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
+
+  UpdateSpeeds(); RebuildUI(self)
+  if ns.SetUpdateRate and self.db and self.db.profile then
+    ns.SetUpdateRate(self.db.profile.updateRate or (1/60))
+  end
+end
+
+function SwingTimer:OnDisable()
+  ToggleTick(self, false)
+end
+
+-- Combat state
+function SwingTimer:PLAYER_REGEN_DISABLED() state.inCombat = true;  ToggleTick(self, true);  ns.UpdateVisibility() end
+function SwingTimer:PLAYER_REGEN_ENABLED()  state.inCombat = false; ToggleTick(self, false); ns.UpdateVisibility() end
+
+function SwingTimer:PLAYER_ENTER_COMBAT()
+  state.isMeleeAuto = true
+  -- Seed MH immediately when swapping to melee so the bar starts at once.
+  UpdateSpeeds()
+  local now = GetTime()
+  state.mhLast = now
+  state.mhNext = now + (state.mhSpeed or C.DEF_MH)
+end
+
+function SwingTimer:PLAYER_LEAVE_COMBAT() state.isMeleeAuto = false end
+function SwingTimer:START_AUTOREPEAT_SPELL() state.autoRepeat = true end
+function SwingTimer:STOP_AUTOREPEAT_SPELL()  state.autoRepeat = false end
+function SwingTimer:UNIT_ATTACK_SPEED() UpdateSpeeds() end
+function SwingTimer:PLAYER_EQUIPMENT_CHANGED() UpdateSpeeds() end
+function SwingTimer:ACTIVE_TALENT_GROUP_CHANGED() UpdateSpeeds() end
+
+-- ---------------------------------------------------------------------------
+-- Combat Log (Wrath 3.3.5a)
+-- Header: timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, ...
 local function OnCLEU(timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, ...)
   if srcGUID ~= playerGUID then return end
   local t = localEventTime(timestamp)
 
-  -- --- MELEE AUTOS ---
+  -- MELEE AUTOS
   if eventType == "SWING_DAMAGE" or eventType == "SWING_MISSED" then
     local hand = assignHand(t)
     if hand == "MH" then
@@ -191,10 +207,11 @@ local function OnCLEU(timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID,
       state.ohNext = t + period
       state.lastHand = "OH"
     end
+    state.lastMeleeAt = t
     return
   end
 
-  -- --- RANGED AUTOS ---
+  -- RANGED AUTOS (hunters etc. via RANGE_* on most cores)
   if eventType == "RANGE_DAMAGE" or eventType == "RANGE_MISSED" then
     local base = state.rangedSpeed or C.DEF_R
     local observed = state.rangedLast and (t - state.rangedLast) or base
@@ -204,11 +221,23 @@ local function OnCLEU(timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID,
     return
   end
 
-  -- --- SPECIALS THAT CONSUME / REPLACE MH SWING (e.g., Raptor Strike) ---
+  -- SPELL_* branch: wands + on-hit melee specials (HS/Cleave/RS/Maul/MB)
   if eventType == "SPELL_DAMAGE" or eventType == "SPELL_MISSED" then
     local spellId = ...
+
+    -- Wands: many servers log Shoot (5019) as SPELL_* instead of RANGE_*
+    if spellId == C.SHOOT_WAND then
+      local base = state.rangedSpeed or C.DEF_R
+      local observed = state.rangedLast and (t - state.rangedLast) or base
+      local period = clampPeriod(base, observed)
+      state.rangedLast = t
+      state.rangedNext = t + period
+      return
+    end
+
+    -- On-next-swing melee specials: reset MH at impact (with dedupe).
     if MELEE_ONHIT_SPELL[spellId] then
-      -- make sure we’re using current weapon speed
+      if shouldSkipOnHit(t) then return end
       UpdateSpeeds()
       local base = state.mhSpeed or C.DEF_MH
       local observed = state.mhLast and (t - state.mhLast) or base
@@ -216,13 +245,15 @@ local function OnCLEU(timestamp, eventType, srcGUID, srcName, srcFlags, dstGUID,
       state.mhLast = t
       state.mhNext = t + period
       state.lastHand = "MH"
+      state.lastMeleeAt = t
       return
     end
   end
 
+  -- Cast success seeding for autos (snappier start)
   if eventType == "SPELL_CAST_SUCCESS" then
     local spellId = ...
-    if spellId == C.AUTO_SHOT and state.autoRepeat then
+    if spellId == C.AUTO_SHOT or spellId == C.SHOOT_WAND then
       local base = state.rangedSpeed or C.DEF_R
       state.rangedLast = t
       state.rangedNext = t + base
@@ -236,7 +267,9 @@ function SwingTimer:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
   OnCLEU(...)
 end
 
--- --------------------------- Commands --------------------------------------
+-- ---------------------------------------------------------------------------
+-- Commands
+
 local function help(self)
   pr(self, "|cffffd200TacoRotSwingTimer:|r")
   pr(self, "/st lock|unlock       - lock movement")
@@ -274,11 +307,11 @@ function SwingTimer:SlashCommand(input)
     return
   end
 
-  if cmd=="scale" and narg then db.scale=narg; ns.ApplyDimensions(); pr(self,("Scale %.2f"):format(narg)); return end
-  if cmd=="alpha" and narg then db.alpha=narg; ns.ApplyDimensions(); pr(self,("Alpha %.2f"):format(narg)); return end
-  if cmd=="width" and narg then db.width=math.floor(narg); ns.ApplyDimensions(); pr(self,"Width "..db.width.."px"); return end
+  if cmd=="scale"  and narg then db.scale=narg;           ns.ApplyDimensions(); pr(self,("Scale %.2f"):format(narg)); return end
+  if cmd=="alpha"  and narg then db.alpha=narg;           ns.ApplyDimensions(); pr(self,("Alpha %.2f"):format(narg)); return end
+  if cmd=="width"  and narg then db.width=math.floor(narg);     ns.ApplyDimensions(); pr(self,"Width "..db.width.."px"); return end
   if cmd=="height" and narg then db.barHeight=math.floor(narg); ns.ApplyDimensions(); pr(self,"Height "..db.barHeight.."px"); return end
-  if cmd=="gap" and narg then db.gap=math.floor(narg); ns.ApplyDimensions(); pr(self,"Gap "..db.gap.."px"); return end
+  if cmd=="gap"    and narg then db.gap=math.floor(narg);       ns.ApplyDimensions(); pr(self,"Gap "..db.gap.."px"); return end
 
   if cmd=="show" and arg=="ooc" then
     db.showOutOfCombat = not db.showOutOfCombat; ns.UpdateVisibility()
@@ -294,14 +327,14 @@ function SwingTimer:SlashCommand(input)
     pr(self, (on and "Showing " or "Hiding ")..which.." bar.")
   end
 
-  if input:match("^mh%s+on$") then setbar("mh", true); return end
-  if input:match("^mh%s+off$") then setbar("mh", false); return end
-  if input:match("^oh%s+on$") then setbar("oh", true); return end
-  if input:match("^oh%s+off$") then setbar("oh", false); return end
-  if input:match("^rg%s+on$") then setbar("rg", true); return end
-  if input:match("^rg%s+off$") then setbar("rg", false); return end
-  if input:match("^ranged%s+on$") then setbar("rg", true); return end
-  if input:match("^ranged%s+off$") then setbar("rg", false); return end
+  if input:match("^mh%s+on$")     then setbar("mh", true);  return end
+  if input:match("^mh%s+off$")    then setbar("mh", false); return end
+  if input:match("^oh%s+on$")     then setbar("oh", true);  return end
+  if input:match("^oh%s+off$")    then setbar("oh", false); return end
+  if input:match("^rg%s+on$")     then setbar("rg", true);  return end
+  if input:match("^rg%s+off$")    then setbar("rg", false); return end
+  if input:match("^ranged%s+on$") then setbar("rg", true);  return end
+  if input:match("^ranged%s+off$")then setbar("rg", false); return end
 
   if cmd=="test" then
     local now = GetTime()
