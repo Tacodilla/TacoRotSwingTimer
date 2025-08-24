@@ -1,3 +1,5 @@
+<img width="241" height="67" alt="image" src="https://github.com/user-attachments/assets/4db3c211-a7ee-45f4-a0ea-3d24edd97a8a" />
+
 ✨ Features
 
 Multi-Weapon Support: Track main-hand, off-hand, and ranged weapons simultaneously
