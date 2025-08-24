@@ -1,5 +1,5 @@
 -- ui.lua — TacoRotSwingTimer (Wrath 3.3.5a)
--- Three independent frames (MH, OH, Ranged). Each moves & toggles separately.
+-- Updated to work better with the new API-based timing system
 
 local ADDON_NAME = "TacoRotSwingTimer"
 local ns = _G[ADDON_NAME] or {}
@@ -17,6 +17,11 @@ local COLORS = {
   rg = {0.95, 0.85, 0.20}, -- yellow
 }
 
+-- Cache for performance
+local math_max, math_min, math_floor = math.max, math.min, math.floor
+local GetTime = GetTime
+local string_format = string.format
+
 local function tex(frame)
   local t = frame:CreateTexture(nil, "BACKGROUND")
   t:SetAllPoints(true)
@@ -31,8 +36,8 @@ local function mkbar(parent, key)
   f:SetScript("OnDragStop", function(self)
     self:StopMovingOrSizing()
     local x, y = self:GetCenter()
-    db.posX = math.floor(x - UIParent:GetWidth()/2 + 0.5)
-    db.posY = math.floor(y - UIParent:GetHeight()/2 + 0.5)
+    db.posX = math_floor(x - UIParent:GetWidth()/2 + 0.5)
+    db.posY = math_floor(y - UIParent:GetHeight()/2 + 0.5)
   end)
 
   compat.ApplyBackdrop(f, 0.6)
@@ -75,9 +80,11 @@ end
 local function fmt(sec)
   if not sec or sec < 0 then return "" end
   if sec >= 10 then
-    return string.format("%.1f", sec)
+    return string_format("%.1f", sec)
+  elseif sec >= 1 then
+    return string_format("%.2f", sec)
   else
-    return string.format("%.2f", sec)
+    return string_format("%.2f", sec)
   end
 end
 
@@ -112,22 +119,37 @@ function ns.BuildUI(cfg, st)
   for k,o in pairs(frames) do place_one(k, o) end
 end
 
-local function apply(o, now, nextAt, period)
-  if not o or not period or period <= 0 then
-    if o then o.bar:SetValue(0); o.right:SetText(""); o.spark:Hide() end
+local function apply(o, now, nextAt, lastAt, speed, isActive)
+  if not o or not speed or speed <= 0 or not nextAt or nextAt <= 0 then
+    if o then 
+      o.bar:SetValue(0) 
+      o.right:SetText("") 
+      o.spark:Hide() 
+    end
     return
   end
-  local remaining = math.max(0, (nextAt or now) - now)
-  local t = 1 - math.min(1, remaining / period)
-  o.bar:SetValue(t)
+  
+  local remaining = math_max(0, nextAt - now)
+  local elapsed = lastAt and math_max(0, now - lastAt) or 0
+  local progress = elapsed / speed
+  
+  -- Clamp progress to [0,1] range
+  progress = math_min(1, math_max(0, progress))
+  
+  o.bar:SetValue(progress)
 
-  -- spark glide
+  -- spark glide - show spark only if we're actively swinging
   local barW = (db.width or 240) - 8
-  local sx = 4 + barW * t
+  local sx = 4 + barW * progress
   o.spark:ClearAllPoints()
   o.spark:SetPoint("CENTER", o.bar, "LEFT", sx, 0)
-  o.spark:SetAlpha(0.8)
-  if remaining > 0 then o.spark:Show() else o.spark:Hide() end
+  
+  if isActive and remaining > 0 and progress < 1 then
+    o.spark:SetAlpha(0.8)
+    o.spark:Show()
+  else
+    o.spark:Hide()
+  end
 
   o.right:SetText(fmt(remaining))
 end
@@ -140,29 +162,31 @@ function ns.UpdateBars(now, st)
   local oh = frames.oh
   local rg = frames.rg
 
-  -- Use observed periods when available (next - last), else fallback to base speeds.
-  local mPer = (state.mhNext and state.mhLast) and (state.mhNext - state.mhLast) or (state.mhSpeed or 2.0)
-  local oPer = (state.ohNext and state.ohLast) and (state.ohNext - state.ohLast) or (state.ohSpeed or 1.5)
-  local rPer = (state.rangedNext and state.rangedLast) and (state.rangedNext - state.rangedLast) or (state.rangedSpeed or 2.0)
-
+  -- MH: Always show if we have recent swing data
   if mh then
     mh.left:SetText("MH")
-    apply(mh, now, state.mhNext, mPer)
+    local isActive = state.isMeleeAuto and state.lastSwingMH > 0
+    apply(mh, now, state.nextSwingMH, state.lastSwingMH, state.mhSpeed, isActive)
   end
 
-  -- OH: always label; animate only if an offhand exists
+  -- OH: Show frame but only animate if we have an offhand and recent data
   if oh then
     oh.left:SetText("OH")
     if state.hasOH then
-      apply(oh, now, state.ohNext, oPer)
+      local isActive = state.isMeleeAuto and state.lastSwingOH > 0
+      apply(oh, now, state.nextSwingOH, state.lastSwingOH, state.ohSpeed, isActive)
     else
-      oh.bar:SetValue(0); oh.right:SetText("0.00"); oh.spark:Hide()
+      oh.bar:SetValue(0)
+      oh.right:SetText("No OH")
+      oh.spark:Hide()
     end
   end
 
+  -- Ranged: Show for auto-shot, wands, etc.
   if rg then
     rg.left:SetText("Ranged")
-    apply(rg, now, state.rangedNext, rPer)
+    local isActive = (state.autoRepeat or state.lastRanged > 0) and state.lastRanged > 0
+    apply(rg, now, state.nextRanged, state.lastRanged, state.rangedSpeed, isActive)
   end
 end
 
