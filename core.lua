@@ -84,6 +84,8 @@ local defaults = {
     posX=0, posY=120,
     showOutOfCombat=true,
     showMelee=true, showOffhand=true, showRanged=true,
+    minimap = { hide = false },
+    config  = { point = "CENTER", x = 0, y = 0, w = 380, h = 360 },
     fontSize=12,
   }
 }
