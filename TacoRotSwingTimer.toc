@@ -4,6 +4,8 @@
 ## Author: Steven
 ## Version: 1.0.0
 ## SavedVariables: SwingTimerDB
+## OptionalDeps: Ace3, LibDataBroker-1.1, LibDBIcon-1.0
+## X-Embeds: Ace3, LibDataBroker-1.1, LibDBIcon-1.0
 
 # Libraries
 libs\LibStub\LibStub.lua
@@ -19,4 +21,8 @@ libs\AceGUI-3.0\AceGUI-3.0.xml
 libs\AceConfig-3.0\AceConfig-3.0.xml
 
 # Core files
-SwingTimer.xml
+Compat-335.lua
+core.lua
+ui.lua
+config_window.lua
+minimap.lua
